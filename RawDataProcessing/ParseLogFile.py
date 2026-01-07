@@ -1,8 +1,12 @@
 import os
 import re
+import json
+import warnings
 import numpy as np
 import pandas as pd
+
 from typing import List, Iterable
+from pathlib import Path
 
 
 # ======== Low-level utilities ========
@@ -24,21 +28,61 @@ def detect_fortran_style(path: str, max_lines: int = 100) -> bool:
     return False
 
 
+def load_config(config_dir: str = ".config"):
+    config_path = Path(config_dir)
+    configs = {}
+    if not config_path.exists():
+        warnings.warn(f"Cannot find folder {config_path}")
+
+    for json_file in config_path.glob("*.json"):
+        try:
+            with open(json_file, "r", encoding="utf-8") as f:
+                configs[json_file.stem] = json.load(f)
+        except Exception as e:
+            warnings.warn(f"Error reading file {json_file.name}: {e}")
+
+    return configs
+
+
 # ======== Parsing ========
 
 
 def _parse_fortran_log(path: str, colnames: List[str]) -> pd.DataFrame:
-    rows: list[list[float]] = []
+    with open(path, "r") as f:
+        content = f.read()
 
-    with open(path) as f:
-        for line in f:
-            if not line.strip() or line.lstrip().startswith("#"):
+    # Global replacement of Fortran-style numbers
+    content = content.replace("D", "E")
+    content = _FORTRAN_EXP_RE.sub(r"\1E\2", content)
+
+    # Exist '=', it indicates a "header = values" format that may span multiple lines
+    if "=" in content:
+        segments = content.split("=")
+        rows = []
+        ncols_expected = len(colnames)
+
+        for i, seg in enumerate(segments):
+            if i == 0:
+                continue  # The part before the first '=' is the header, skip
+
+            tokens = seg.split()
+            # Take only the first ncols_expected tokens as data
+            if len(tokens) >= ncols_expected:
+                try:
+                    rows.append([float(t) for t in tokens[:ncols_expected]])
+                except ValueError:
+                    continue
+    else:
+        # Not exist '=', it is a plain table format
+        rows = []
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
                 continue
-
-            payload = line.split("=", 1)[-1]
-            tokens = payload.split()
-            values = [float(fix_fortran_number(tok)) for tok in tokens]
-            rows.append(values)
+            try:
+                rows.append([float(t) for t in line.split()])
+            except ValueError:
+                continue
 
     if not rows:
         raise ValueError(f"No valid data rows found in {path}")
@@ -141,3 +185,21 @@ def ll_dg(path: str, time: float, scope: float) -> pd.Series:
     avg["mdot_edd"] = (4 * np.pi * G * avg["mbh"] * m_p) / (eta * c * sigma_t)
 
     return avg
+
+
+if __name__ == "__main__":
+    force_parse = False
+
+    configs = load_config()
+    raw_data_dir = configs["BaseConfig"]["raw_data_dir"]
+    df = {}
+    for gal_group in configs["LogFilePaths"].items():
+        print(f"Processing galaxy group: {gal_group[0]}")
+        for gal in gal_group[1].items():
+            key = f"{gal_group[0]}_{gal[0]}"
+            print(f"  Parsing configuration: {key}")
+            path = os.path.join(raw_data_dir, gal[1][0], gal[1][1])
+            col_names = configs["HdfraColnames"][gal_group[0]]
+            save_path = os.path.join(configs["BaseConfig"]["data_dir"], f"{key}.parquet")
+
+            df[key] = parse_logfile(path=path, colnames=col_names, save_path=save_path, force_parse=force_parse)
