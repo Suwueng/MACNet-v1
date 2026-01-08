@@ -1,4 +1,10 @@
 RawData
+Data/
+Results/
+runs/
+
 .vscode/
 .config/
-Data/
+.cache/
+
+__pycache__/

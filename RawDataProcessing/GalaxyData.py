@@ -59,7 +59,7 @@ class GalData:
             return self._data_hdfra
 
         data = {}
-        for original_name, new_name in self._corr:
+        for original_name, new_name in self._corr.items():
             arr = self._data_hdfra.select(original_name)[:]
             data[new_name] = arr[0, ...]
         data["temperature"] = 93 * data["gas_energy"] / data["density"]
@@ -278,8 +278,7 @@ class GalData:
 
         Args:
             new_shape (Tuple[int, ...]): Desired shape for each snapshot variable.
-            weights (List[np.ndarray | None], optional): List of weight arrays for each variable. If None, sum will be used for that variable. If not provided, defaults to None for all variables. If existing keys in snapshot are not in weights, they will default to mass-weighted averaging.
-                Length of weights must match the number of variables in the snapshot.
+            weights (List[np.ndarray | None], optional): List of weight arrays for each variable. If None, sum will be used for that variable. If not provided, defaults to None for all variables. If existing keys in snapshot are not in weights, they will default to mass-weighted averaging.Length of weights must match the number of variables in the snapshot.
 
         Returns:
             GalyData: A new instance with rescaled snapshot data and corresponding axes.
@@ -377,7 +376,7 @@ class GalData:
 
             corr_grp = f.create_group("correlation")
             corr_grp.attrs["length"] = len(self._corr)
-            for i, (orig, new) in enumerate(self._corr):
+            for i, (orig, new) in enumerate(self._corr.items()):
                 corr_grp.attrs[f"{i}_orig"] = orig
                 corr_grp.attrs[f"{i}_new"] = new
 
@@ -701,14 +700,18 @@ class GalDataSet:
 
         train_idx, val_idx, test_idx = [], [], []
         if labels is None:
-            tr, va, te = self._split_group(indices, train_size, validation_size, rng)
+            tr, va, te = self._split_group(indices, train_size, validation_size, rng, shuffle)
             train_idx.append(tr)
             val_idx.append(va)
             test_idx.append(te)
         else:
             for lv in np.unique(labels):
-                group_idx = indices[labels == lv]
-                tr, va, te = self._split_group(group_idx, train_size, validation_size, rng)
+                if labels.dtype == object:
+                    mask = np.array([x == lv for x in labels])
+                else:
+                    mask = labels == lv
+                group_idx = indices[mask]
+                tr, va, te = self._split_group(group_idx, train_size, validation_size, rng, shuffle)
                 if tr.size:
                     train_idx.append(tr)
                 if validation_size > 0 and va.size:
@@ -743,9 +746,14 @@ class GalDataSet:
             log_transform (bool): Whether to apply log1p transformation before standardization.
         """
         self.__verify_data_loaded()
-        x = self.x
+        x = self.x.copy()  # Use copy to avoid modifying original data
         if log_transform:
-            x = np.log1p(x)
+            # Safely apply log1p only to non-negative channels (scalars like density, temperature, etc.)
+            # Velocities and other signed quantities should remain linear.
+            # We check the minimum value across all samples for each channel.
+            for i in range(x.shape[1]):
+                if np.min(x[:, i]) >= 0:
+                    x[:, i] = np.log1p(x[:, i])
 
         if mean is None or std is None:
             mean = np.mean(x, axis=(0, 2, 3), keepdims=True)
@@ -806,13 +814,13 @@ class GalDataSet:
 
         if isinstance(stratify, str):
             if stratify == "groups":
-                return np.array(
-                    [
-                        tuple(np.asarray(g).tolist()) if np.asarray(g).ndim > 0 else np.asarray(g).item()
-                        for g in self._group_labels
-                    ],
-                    dtype=object,
-                )
+                items = [
+                    tuple(np.asarray(g).tolist()) if np.asarray(g).ndim > 0 else np.asarray(g).item()
+                    for g in self._group_labels
+                ]
+                res = np.empty(len(items), dtype=object)
+                res[:] = items
+                return res
 
             if stratify == "y":
                 y = self.y
@@ -829,11 +837,18 @@ class GalDataSet:
             raise ValueError("Provided stratify array must be 1D and match dataset length.")
         return labels
 
-    def _split_group(self, group_idx: np.ndarray, train_size: float, validation_size: float, rng: np.random.Generator):
+    def _split_group(
+        self,
+        group_idx: np.ndarray,
+        train_size: float,
+        validation_size: float,
+        rng: np.random.Generator,
+        shuffle: bool,
+    ):
         """
         Splits the provided group indices into train, validation, and test sets.
         """
-        if self.shuffle:
+        if shuffle:
             rng.shuffle(group_idx)
 
         n = len(group_idx)
@@ -880,3 +895,63 @@ class GalDataSet:
         ds._group_labels = [self._group_labels[i] for i in idx]
         ds.folder_path = self.folder_path.copy() if self.folder_path is not None else None
         return ds
+
+
+if __name__ == "__main__":
+    from tqdm.contrib import tenumerate
+
+    try:
+        from RawDataProcessing.ParseLogFile import load_config, ll_eg, ll_dg
+    except ModuleNotFoundError:
+        from ParseLogFile import load_config, ll_eg, ll_dg
+
+    configs = load_config(".config")
+    raw_data_dir = configs["BaseConfig"]["raw_data_dir"]
+    data_dir = configs["BaseConfig"]["data_dir"]
+
+    ndim = 2
+    coordinate_mode = "polar"
+
+    for gal_type, gal_group in configs["RawDataConfig"].items():
+        # if gal_type == "elliptical_galaxy":
+        #     continue  # Skip elliptical galaxies for 2D processing
+        for gal_nickname, gal_config in gal_group.items():
+            gal_name = f"{gal_type}_{gal_nickname}"
+
+            hdfra_folder = os.path.join(raw_data_dir, gal_config["folder_name"], "data")
+            hdfra_paths = sorted([f for f in os.listdir(hdfra_folder) if f.startswith("hdfra.")])
+            log_path = os.path.join(data_dir, f"{gal_name}.parquet")
+            func_parse_log = ll_eg if "elliptical" in gal_type else ll_dg
+            corr = configs["HdfraConfig"][gal_type]["correspondence"]
+
+            # Initialize the time of snapshots
+            dt = gal_config["dt"]
+            scope = dt * 0.1
+            if gal_config.get("mode") != "concatenate":
+                time_range = gal_config["range"]
+                time_seq = np.arange(time_range[0], time_range[1]) * dt + gal_config.get("offset", 0)
+            else:
+                indices = np.concatenate([np.arange(start, end) for start, end in gal_config["ranges"]])
+                time_seq = indices * dt + gal_config.get("offset", 0)
+
+            save_path_fine = os.path.join(data_dir, gal_name, "fine")
+            os.makedirs(save_path_fine, exist_ok=True)
+            save_path_coarse = os.path.join(data_dir, gal_name, "coarse")
+            os.makedirs(save_path_coarse, exist_ok=True)
+
+            for index, file_name in tenumerate(hdfra_paths, desc=f"Processing {gal_name}"):
+                file_path = os.path.join(hdfra_folder, file_name)
+                file = GalData(ndim=ndim, coordinate_mode=coordinate_mode)
+                file.read_hdfra(
+                    hdfra_path=file_path,
+                    time=time_seq[index],
+                    log_path=log_path,
+                    func_parse_log=func_parse_log,
+                    scope=scope,
+                )
+                file.set_corr(corr).set_coord(["fakeDim2", "fakeDim1"])
+                file.save_h5(os.path.join(save_path_fine, f"{str(index).zfill(5)}.h5"))
+
+                # Scale transform to coarse grid
+                file_coarse = file.rescale(new_shape=(8, 8), weights={"density": file.grid_volume})
+                file_coarse.save_h5(os.path.join(save_path_coarse, f"{str(index).zfill(5)}.h5"))

@@ -135,14 +135,11 @@ def parse_logfile(
 # ======== Time-window Analysis ========
 
 
-def mean_around_time(df: pd.DataFrame, time: float, scope: float, *, time_col: str = "time") -> pd.Series:
+def mean_around_time(df: pd.DataFrame, time: float, scope: float, time_col: str = "time") -> pd.Series:
     if time_col not in df.columns:
         raise KeyError(f"Missing required column '{time_col}'")
 
     mask = (df[time_col] >= time - scope) & (df[time_col] <= time + scope)
-    if not mask.any():
-        raise ValueError("No data points in the specified time window")
-
     avg = df.loc[mask].mean()
     avg[time_col] = time
     return avg
@@ -188,18 +185,20 @@ def ll_dg(path: str, time: float, scope: float) -> pd.Series:
 
 
 if __name__ == "__main__":
-    force_parse = False
+    force_parse = True
 
     configs = load_config()
     raw_data_dir = configs["BaseConfig"]["raw_data_dir"]
     df = {}
-    for gal_group in configs["LogFilePaths"].items():
-        print(f"Processing galaxy group: {gal_group[0]}")
-        for gal in gal_group[1].items():
-            key = f"{gal_group[0]}_{gal[0]}"
-            print(f"  Parsing configuration: {key}")
-            path = os.path.join(raw_data_dir, gal[1][0], gal[1][1])
-            col_names = configs["HdfraColnames"][gal_group[0]]
-            save_path = os.path.join(configs["BaseConfig"]["data_dir"], f"{key}.parquet")
+    for gal_type, gal_group in configs["RawDataConfig"].items():
+        print(f"Processing galaxy group: {gal_type}")
+        for gal_nickname, gal_config in gal_group.items():
+            gal_name = f"{gal_type}_{gal_nickname}"
+            print(f"  Parsing galaxy: {gal_name}")
 
-            df[key] = parse_logfile(path=path, colnames=col_names, save_path=save_path, force_parse=force_parse)
+            path = os.path.join(raw_data_dir, gal_config["folder_name"], gal_config["log_file"])
+            col_names = configs["HdfraConfig"][gal_type]["colnames"]
+            save_path = os.path.join(configs["BaseConfig"]["data_dir"], f"{gal_name}.parquet")
+
+            df[gal_name] = parse_logfile(path=path, colnames=col_names, save_path=save_path, force_parse=force_parse)
+    print("Parsing completed.")
