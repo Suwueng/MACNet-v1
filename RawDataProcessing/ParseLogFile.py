@@ -13,10 +13,10 @@ from pathlib import Path
 _FORTRAN_EXP_RE = re.compile(r"(\d+(?:\.\d+)?)([+-]\d+)")
 
 
-def fix_fortran_number(token: str) -> str:
-    """Convert Fortran-style scientific notation to standard float notation."""
-    token = token.replace("D", "E")
-    return _FORTRAN_EXP_RE.sub(r"\1E\2", token)
+# def fix_fortran_number(token: str) -> str:
+#     """Convert Fortran-style scientific notation to standard float notation."""
+#     token = token.replace("D", "E")
+#     return _FORTRAN_EXP_RE.sub(r"\1E\2", token)
 
 
 def detect_fortran_style(path: str, max_lines: int = 100) -> bool:

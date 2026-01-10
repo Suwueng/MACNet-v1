@@ -99,7 +99,7 @@ if __name__ == "__main__":
     cache_path_exp3 = os.path.join(".cache", "Exp3_")
 
     cache_pt(Exp_eg_folder_paths, cache_path_exp1, balance="oversample")
-    cache_pt(Exp_dg_folder_paths, cache_path_exp2, stratify="groups")
+    cache_pt(Exp_dg_folder_paths, cache_path_exp2, stratify="groups", balance="oversample")
     cache_pt(Exp_all_folder_paths, cache_path_exp3, balance="oversample")
 
     # for i, folder_paths in enumerate([Exp_eg_folder_paths, Exp_dg_folder_paths, Exp_all_folder_paths]):

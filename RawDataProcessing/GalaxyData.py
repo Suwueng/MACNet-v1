@@ -513,6 +513,7 @@ class GalDataSet:
         self.__verify_data_loaded()
         mdot_macer = np.array(self._raw_data["mdot_macer"])
         mdot_edd = np.array(self._raw_data["mdot_edd"])
+
         return np.log10(mdot_macer / mdot_edd)
 
     @property
@@ -925,14 +926,14 @@ if __name__ == "__main__":
             corr = configs["HdfraConfig"][gal_type]["correspondence"]
 
             # Initialize the time of snapshots
-            dt = gal_config["dt"]
-            scope = dt * 0.1
+            snapshot_dt = gal_config["snapshot_dt"]
+            scope = snapshot_dt * 0.1
             if gal_config.get("mode") != "concatenate":
                 time_range = gal_config["range"]
-                time_seq = np.arange(time_range[0], time_range[1]) * dt + gal_config.get("offset", 0)
+                time_seq = np.arange(time_range[0], time_range[1]) * snapshot_dt + gal_config.get("offset", 0)
             else:
                 indices = np.concatenate([np.arange(start, end) for start, end in gal_config["ranges"]])
-                time_seq = indices * dt + gal_config.get("offset", 0)
+                time_seq = indices * snapshot_dt + gal_config.get("offset", 0)
 
             save_path_fine = os.path.join(data_dir, gal_name, "fine")
             os.makedirs(save_path_fine, exist_ok=True)
@@ -940,6 +941,9 @@ if __name__ == "__main__":
             os.makedirs(save_path_coarse, exist_ok=True)
 
             for index, file_name in tenumerate(hdfra_paths, desc=f"Processing {gal_name}"):
+                if gal_name not in ["disk_galaxy_supplement", "disk_galaxy_fiducial_4", "disk_galaxy_fiducial_7"] and index <= 45:
+                    continue  # Skip first unstable snapshots
+
                 file_path = os.path.join(hdfra_folder, file_name)
                 file = GalData(ndim=ndim, coordinate_mode=coordinate_mode)
                 file.read_hdfra(
