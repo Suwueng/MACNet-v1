@@ -22,7 +22,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 
-from Experiment.Network import AccretionTransformer
+from Experiment.Network import AccretionTransformer, HybridAccretionTransformer
 
 
 VELOCITY_CHANNEL_COUNT = 3
@@ -375,6 +375,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--loss", type=str, choices=["mse", "l1", "huber"], default="mse", help="Loss function to use")
     parser.add_argument("--huber_delta", type=float, default=1, help="Delta parameter for Huber loss")
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        choices=["transformer", "hybrid"],
+        default="hybird",
+        help="Type of model architecture: 'transformer' or 'hybrid' (CNN + Transformer)",
+    )
     parser.add_argument("--d_model", type=int, default=256, help="Model embedding dimension (d_model)")
     parser.add_argument("--n_layers", type=int, default=4, help="Number of transformer layers")
     parser.add_argument("--n_heads", type=int, default=4, help="Number of attention heads")
@@ -826,16 +833,28 @@ def main():
 
     # Model
     c_in = train_ds.x.shape[1]
-    model = AccretionTransformer(
-        c_in=c_in,
-        d_model=args.d_model,
-        n_layers=args.n_layers,
-        n_heads=args.n_heads,
-        d_ff=args.d_ff,
-        pos_num_bands=args.pos_num_bands,
-        pos_max_freq=args.pos_max_freq,
-        p_drop=args.p_drop,
-    ).to(device)
+    if args.model_type == "hybrid":
+        model = HybridAccretionTransformer(
+            c_in=c_in,
+            d_model=args.d_model,
+            n_layers=args.n_layers,
+            n_heads=args.n_heads,
+            d_ff=args.d_ff,
+            pos_num_bands=args.pos_num_bands,
+            pos_max_freq=args.pos_max_freq,
+            p_drop=args.p_drop,
+        ).to(device)
+    else:
+        model = AccretionTransformer(
+            c_in=c_in,
+            d_model=args.d_model,
+            n_layers=args.n_layers,
+            n_heads=args.n_heads,
+            d_ff=args.d_ff,
+            pos_num_bands=args.pos_num_bands,
+            pos_max_freq=args.pos_max_freq,
+            p_drop=args.p_drop,
+        ).to(device)
 
     try:
         model.eval()

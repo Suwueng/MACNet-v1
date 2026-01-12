@@ -532,6 +532,16 @@ class GalDataSet:
         return np.array(self._raw_data["time"])
 
     @property
+    def mdot_edd(self) -> np.ndarray:
+        self.__verify_data_loaded()
+        return np.array(self._raw_data["mdot_edd"])
+
+    @property
+    def mdot_macer(self) -> np.ndarray:
+        self.__verify_data_loaded()
+        return np.array(self._raw_data["mdot_macer"])
+
+    @property
     def groups(self) -> np.ndarray:
         self.__verify_data_loaded()
         if self._group_labels is None:
@@ -927,7 +937,7 @@ if __name__ == "__main__":
 
             # Initialize the time of snapshots
             snapshot_dt = gal_config["snapshot_dt"]
-            scope = snapshot_dt * 0.1
+            scope = snapshot_dt * 0.5
             if gal_config.get("mode") != "concatenate":
                 time_range = gal_config["range"]
                 time_seq = np.arange(time_range[0], time_range[1]) * snapshot_dt + gal_config.get("offset", 0)

@@ -16,11 +16,20 @@ def cache_pt(
     train_size: float = 0.6,
     validation_size: float = 0.2,
     balance: str = None,
+    mirror: bool = False,
     stratify: str | np.ndarray | None = None,
 ):
     dataset = GalDataSet().load_data(data_path)
-    # dataset.drop_invalid().filter(threshold).mirror_data()
     dataset.drop_invalid().filter(threshold)
+    if mirror:
+        dataset.mirror_data()
+
+    # Display data counts for each group
+    unique_groups, counts = np.unique(dataset.groups, axis=0, return_counts=True)
+    print("Data counts per group after filtering:")
+    for group, count in zip(unique_groups, counts):
+        print(f"  Group {group}: {count}")
+    
     if balance is not None:
         if balance not in ["oversample", "undersample"]:
             raise ValueError("Balance method must be 'oversample' or 'undersample'")
@@ -82,11 +91,11 @@ Exp_eg_folder_paths = [
 ]
 Exp_dg_folder_paths = [
     (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial", resolution), np.array([2, 1])),
-    (os.path.join(workspace_root, "Data", "disk_galaxy_supplement", resolution), np.array([2, 2])),
-    (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial_4", resolution), np.array([2, 3])),
-    (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial_7", resolution), np.array([2, 4])),
-    (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial_10", resolution), np.array([2, 5])),
-    (os.path.join(workspace_root, "Data", "disk_galaxy_low", resolution), np.array([2, 6])),
+    (os.path.join(workspace_root, "Data", "disk_galaxy_supplement", resolution), np.array([2, 1])),
+    (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial_4", resolution), np.array([2, 2])),
+    (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial_7", resolution), np.array([2, 3])),
+    (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial_10", resolution), np.array([2, 4])),
+    (os.path.join(workspace_root, "Data", "disk_galaxy_low", resolution), np.array([2, 5])),
 ]
 
 Exp_all_folder_paths = Exp_eg_folder_paths + Exp_dg_folder_paths
@@ -98,7 +107,7 @@ if __name__ == "__main__":
     cache_path_exp2 = os.path.join(".cache", "Exp2_")
     cache_path_exp3 = os.path.join(".cache", "Exp3_")
 
-    cache_pt(Exp_eg_folder_paths, cache_path_exp1, balance="oversample")
+    # cache_pt(Exp_eg_folder_paths, cache_path_exp1, balance="oversample")
     cache_pt(Exp_dg_folder_paths, cache_path_exp2, stratify="groups", balance="oversample")
     cache_pt(Exp_all_folder_paths, cache_path_exp3, balance="oversample")
 
