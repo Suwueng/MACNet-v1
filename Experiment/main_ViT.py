@@ -379,7 +379,7 @@ def parse_args() -> argparse.Namespace:
         "--model_type",
         type=str,
         choices=["transformer", "hybrid"],
-        default="hybird",
+        default="transformer",
         help="Type of model architecture: 'transformer' or 'hybrid' (CNN + Transformer)",
     )
     parser.add_argument("--d_model", type=int, default=256, help="Model embedding dimension (d_model)")

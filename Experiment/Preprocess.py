@@ -7,110 +7,168 @@ print(os.getcwd())
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from RawDataProcessing.GalaxyData import GalDataSet
-
-
-def cache_pt(
-    data_path: str,
-    cache_path: str,
-    threshold: float = -5,
-    train_size: float = 0.6,
-    validation_size: float = 0.2,
-    balance: str = None,
-    mirror: bool = False,
-    stratify: str | np.ndarray | None = None,
-):
-    dataset = GalDataSet().load_data(data_path)
-    dataset.drop_invalid().filter(threshold)
-    if mirror:
-        dataset.mirror_data()
-
-    # Display data counts for each group
-    unique_groups, counts = np.unique(dataset.groups, axis=0, return_counts=True)
-    print("Data counts per group after filtering:")
-    for group, count in zip(unique_groups, counts):
-        print(f"  Group {group}: {count}")
-    
-    if balance is not None:
-        if balance not in ["oversample", "undersample"]:
-            raise ValueError("Balance method must be 'oversample' or 'undersample'")
-        dataset.balance_groups(method=balance)
-
-    train_set, val_set, test_set = dataset.split(
-        train_size=train_size, validation_size=validation_size, stratify=stratify
-    )
-    print(f"Training set size:   {len(train_set.raw_data['time'])}")
-    print(f"Validation set size: {len(val_set.raw_data['time'])}")
-    print(f"Testing set size:    {len(test_set.raw_data['time'])}")
-
-    x_train, mean, std = train_set.standardize()
-    x_val = val_set.standardize(mean, std)
-    x_test = test_set.standardize(mean, std)
-
-    torch.save(
-        (
-            x_train,
-            train_set.coordinate,
-            train_set.y,
-            train_set.mbh,
-            train_set.y_baseline,
-            train_set.groups,
-            train_set.n_groups,
-        ),
-        cache_path + "train.pt",
-    )
-    torch.save(
-        (x_val, val_set.coordinate, val_set.y, val_set.mbh, val_set.y_baseline, val_set.groups, val_set.n_groups),
-        cache_path + "val.pt",
-    )
-    torch.save(
-        (
-            x_test,
-            test_set.coordinate,
-            test_set.y,
-            test_set.mbh,
-            test_set.y_baseline,
-            test_set.groups,
-            test_set.n_groups,
-        ),
-        cache_path + "test.pt",
-    )
-
-    return mean, std
-
-
 from RawDataProcessing.ParseLogFile import load_config
 
-configs = load_config(".config")
-workspace_root = configs["BaseConfig"]["workspace_root"]
 
-resolution = "coarse"  # 'coarse' or 'fine'
-Exp_eg_folder_paths = [
-    (os.path.join(workspace_root, "Data", "elliptical_galaxy_fiducial", resolution), np.array([1, 1])),
-    (os.path.join(workspace_root, "Data", "elliptical_galaxy_0dot1", resolution), np.array([1, 2])),
-    (os.path.join(workspace_root, "Data", "elliptical_galaxy_pgc", resolution), np.array([1, 3])),
-]
-Exp_dg_folder_paths = [
-    (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial", resolution), np.array([2, 1])),
-    (os.path.join(workspace_root, "Data", "disk_galaxy_supplement", resolution), np.array([2, 1])),
-    (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial_4", resolution), np.array([2, 2])),
-    (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial_7", resolution), np.array([2, 3])),
-    (os.path.join(workspace_root, "Data", "disk_galaxy_fiducial_10", resolution), np.array([2, 4])),
-    (os.path.join(workspace_root, "Data", "disk_galaxy_low", resolution), np.array([2, 5])),
-]
+class CachePt:
+    def __init__(self, dataset: GalDataSet = None):
+        self._dataset = dataset
 
-Exp_all_folder_paths = Exp_eg_folder_paths + Exp_dg_folder_paths
+    # ------------ Properties -----------
+
+    @property
+    def dataset(self):
+        return self._dataset
+
+    # ------------ Dunder Methods ------------
+
+    def __len__(self):
+        return len(self._dataset.raw_data["time"])
+
+    def __add__(self, other: "CachePt") -> "CachePt":
+        if not isinstance(other, CachePt):
+            raise TypeError("Can only add CachePt to another CachePt")
+        combined_dataset = self._dataset + other._dataset
+        return CachePt(combined_dataset)
+
+    # ------------ Methods ------------
+
+    def load(self, path: str):
+        self._dataset = GalDataSet().load_data(path)
+        self._dataset.drop_invalid()
+        return self
+
+    def split(
+        self,
+        train_size: float,
+        validation_size: float,
+        stratify: str | np.ndarray | None = None,
+    ):
+        train_set, val_set, test_set = self._dataset.split(
+            train_size=train_size, validation_size=validation_size, stratify=stratify
+        )
+        return CachePt(train_set), CachePt(val_set), CachePt(test_set)
+
+    def process(
+        self, threshold: float = None, mirror: bool = False, balance: str = None
+    ):
+        data = self._dataset
+        if threshold is not None:
+            data.filter(threshold)
+        if mirror:
+            data.mirror_data()
+        if balance is not None:
+            if balance not in ["oversample", "undersample"]:
+                raise ValueError("Balance method must be 'oversample' or 'undersample'")
+            data.balance_groups(method=balance)
+        return CachePt(data)
+
+    def to_pt(
+        self,
+        save_path: str,
+        mean: np.ndarray | None = None,
+        std: np.ndarray | None = None,
+    ):
+        data = self._dataset
+        if mean is not None and std is not None:
+            x = data.standardize(mean, std)
+        else:
+            x, mean, std = data.standardize()
+        torch.save(
+            (
+                x,
+                data.coordinate,
+                data.y,
+                data.mbh,
+                data.y_baseline,
+                data.groups,
+                data.n_groups,
+            ),
+            save_path,
+        )
+        return mean, std
+
+
+def get_folder_paths(configs_path, gal_type, resolution):
+    configs = load_config(configs_path)
+    data_dir = configs["BaseConfig"]["data_dir"]
+    raw_data_config = configs["RawDataConfig"]
+
+    folder_abs_paths = []
+    for gal_nickname in raw_data_config[gal_type]:
+        gal_name = f"{gal_type}_{gal_nickname}"
+        folder_abs_path = os.path.join(data_dir, gal_name, resolution)
+        folder_abs_paths.append([folder_abs_path, gal_name])
+    return folder_abs_paths
 
 
 if __name__ == "__main__":
+    resolution = "coarse"
+    configs_dir = ".config"
 
-    cache_path_exp1 = os.path.join(".cache", "Exp1_")
-    cache_path_exp2 = os.path.join(".cache", "Exp2_")
-    cache_path_exp3 = os.path.join(".cache", "Exp3_")
+    exp_eg_folder_paths = get_folder_paths(configs_dir, "elliptical_galaxy", resolution)
+    exp_dg_folder_paths = get_folder_paths(configs_dir, "disk_galaxy", resolution)
+    exp_all_folder_paths = exp_eg_folder_paths + exp_dg_folder_paths
 
-    # cache_pt(Exp_eg_folder_paths, cache_path_exp1, balance="oversample")
-    cache_pt(Exp_dg_folder_paths, cache_path_exp2, stratify="groups", balance="oversample")
-    cache_pt(Exp_all_folder_paths, cache_path_exp3, balance="oversample")
+    # # Create each type galaxy cache
+    # for i, path in enumerate(
+    #     [exp_eg_folder_paths, exp_dg_folder_paths, exp_all_folder_paths]
+    # ):
+    #     print(f"Processing Experiment {i+1}...")
+    #     save_path = os.path.join(".cache", f"Exp{i+1}_")
 
-    # for i, folder_paths in enumerate([Exp_eg_folder_paths, Exp_dg_folder_paths, Exp_all_folder_paths]):
-    #     cache_path = os.path.join(".cache", f"Exp{i+1}_")
-    #     cache_pt(folder_paths, cache_path, balance="oversample")
+    #     cache = CachePt().load(path)
+    #     train_cache, val_cache, test_cache = cache.split(
+    #         train_size=0.6, validation_size=0.2, stratify="groups"
+    #     )
+
+    #     train_cache = train_cache.process(threshold=-5, balance="oversample")
+    #     val_cache = val_cache.process(threshold=-5)
+    #     test_cache = test_cache.process(threshold=-5)
+    #     print(f"  Training set size:   {len(train_cache)}")
+    #     print(f"  Validation set size: {len(val_cache)}")
+    #     print(f"  Testing set size:    {len(test_cache)}")
+
+    #     mean, std = train_cache.to_pt(save_path + "train.pt")
+    #     val_cache.to_pt(save_path + "val.pt", mean, std)
+    #     test_cache.to_pt(save_path + "test.pt", mean, std)
+
+    # Create in- and out-datasets for each galaxy type
+    exp_eg_folder_paths_in = exp_eg_folder_paths.copy()
+    exp_dg_folder_paths_in = exp_dg_folder_paths.copy()
+    exp_eg_folder_paths_in.pop(2)
+    exp_dg_folder_paths_in.pop(2)
+    exp_eg_folder_paths_out = [exp_eg_folder_paths[2]]
+    exp_dg_folder_paths_out = [exp_dg_folder_paths[2]]
+
+    for i, (in_paths, out_path) in enumerate(
+        [
+            (exp_eg_folder_paths_in, exp_eg_folder_paths_out),
+            (exp_dg_folder_paths_in, exp_dg_folder_paths_out),
+        ]
+    ):
+        print(f"Processing Experiment {i+4}...")
+        save_path = os.path.join(".cache", f"Exp{i+4}_")
+
+        cache_in = CachePt().load(in_paths)
+        train_cache, val_cache, test_cache = cache_in.split(
+            train_size=0.6, validation_size=0.2, stratify="groups"
+        )
+
+        train_cache = train_cache.process(threshold=-5, balance="oversample")
+        val_cache = val_cache.process(threshold=-5)
+        test_cache = test_cache.process(threshold=-5)
+        print(f"  Training set size:   {len(train_cache)}")
+        print(f"  Validation set size: {len(val_cache)}")
+        print(f"  Testing set size:    {len(test_cache)}")
+
+        mean, std = train_cache.to_pt(save_path + "train.pt")
+        val_cache.to_pt(save_path + "val.pt", mean, std)
+        test_cache.to_pt(save_path + "test.pt", mean, std)
+
+        cache_out = CachePt().load(out_path)
+
+        cache_out = cache_out.process()
+        print(f"  Out-set size: {len(cache_out)}")
+
+        cache_out.to_pt(save_path + "out.pt", mean, std)

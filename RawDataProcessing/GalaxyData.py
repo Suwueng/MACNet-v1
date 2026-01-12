@@ -546,7 +546,7 @@ class GalDataSet:
         self.__verify_data_loaded()
         if self._group_labels is None:
             raise ValueError("Group labels not initialized. Please call load_data() first.")
-        return np.asarray(self._group_labels, dtype=int)
+        return np.asarray(self._group_labels, dtype=str)
 
     @property
     def n_groups(self) -> int:
@@ -565,6 +565,21 @@ class GalDataSet:
     def __len__(self):
         self.__verify_data_loaded()
         return len(self._raw_data[self._x_keys[0]])
+    
+    def __add__(self, other: "GalDataSet") -> "GalDataSet":
+        self.__verify_data_loaded()
+        other.__verify_data_loaded()
+
+        new_dataset = GalDataSet()
+        new_dataset._x_keys = self._x_keys
+        new_dataset._coord_keys = self._coord_keys
+
+        new_dataset._raw_data = {}
+        for key in self._raw_data:
+            new_dataset._raw_data[key] = self._raw_data[key] + other._raw_data[key]
+
+        new_dataset._group_labels = self._group_labels + other._group_labels
+        return new_dataset
 
     # -------- Public Methods --------
 
@@ -770,10 +785,12 @@ class GalDataSet:
             mean = np.mean(x, axis=(0, 2, 3), keepdims=True)
             std = np.std(x, axis=(0, 2, 3), keepdims=True)
             std_safe = np.where(std == 0, 1.0, std)
-            return (x - mean) / std_safe, mean, std_safe
+            x = (x - mean) / std_safe
+            return x, mean, std_safe
         elif mean is not None and std is not None:
             std_safe = np.where(std == 0, 1, std)
-            return (x - mean) / std_safe
+            x = (x - mean) / std_safe
+            return x
         else:
             raise ValueError("Both mean and std must be provided for standardization.")
 
