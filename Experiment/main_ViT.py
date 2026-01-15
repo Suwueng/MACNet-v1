@@ -266,8 +266,8 @@ def parse_args() -> argparse.Namespace:
     )
     
     # Augmentation args
-    parser.add_argument("--aug_prob", type=float, default=0.5, help="Probability to apply radial crop")
-    parser.add_argument("--aug_min_crop_ratio", type=float, default=0.7, help="Minimum ratio r_cut/r_max for cropping")
+    parser.add_argument("--aug_prob", type=float, default=0.8, help="Probability to apply radial crop")
+    parser.add_argument("--aug_min_crop_ratio", type=float, default=0.6, help="Minimum ratio r_cut/r_max for cropping")
     
     parser.add_argument("--log_dir", type=str, default="runs", help="Directory to write TensorBoard logs")
 
@@ -375,7 +375,7 @@ def make_criterion(kind: str, delta: float, alpha: float = 1.0):
         raise ValueError(kind)
 
     def weight_linear(target: torch.Tensor):
-        return 1.0 + alpha * 10**target
+        return 1.0 + alpha * torch.exp(target) 
 
     return WeightedLoss(base_criterion=base, weights_fn=weight_linear)
 
