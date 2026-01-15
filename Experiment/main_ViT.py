@@ -56,190 +56,50 @@ DEFAULT_V_THETA_INDEX = (
 # =============================================
 # 0) Augmentations
 # =============================================
-class RandomSpatialAugmentor:
-    def __init__(
-        self,
-        p_theta_roll: float = 0.5,
-        p_theta_mirror: float = 0.5,
-        p_cutout: float = 0.3,
-        erase_scale: Tuple[float, float] = (0.08, 0.25),
-        angle_min: float = 0.05,
-        angle_max: float = math.pi - 0.05,
-        p_gaussian_blur: float = 0.2,
-        blur_kernel_sizes: Tuple[int, ...] = (3, 5, 7),
-        blur_sigma: Tuple[float, float] = (0.6, 1.6),
-        scalar_jitter_std: float = 0.04,
-        scalar_jitter_radial_power: float = 1.5,
-        cutout_outer_bias: float = 2.5,
-        cutout_radial_span: Tuple[float, float] = (0.05, 0.2),
-        cutout_theta_span: Tuple[float, float] = (0.15, 0.5),
-        channel_protocol: Optional[dict[str, Tuple[int, ...]]] = None,
-        v_theta_index: Optional[int] = None,
-    ) -> None:
-        self.p_theta_roll = p_theta_roll
-        self.p_theta_mirror = p_theta_mirror
-        self.p_cutout = p_cutout
-        self.erase_scale = erase_scale
-        if not 0.0 <= angle_min < angle_max <= math.pi:
-            raise ValueError("angle_min and angle_max must satisfy 0 <= angle_min < angle_max <= pi")
-        self.angle_min = angle_min
-        self.angle_max = angle_max
-        self.p_gaussian_blur = p_gaussian_blur
-        self.blur_kernel_sizes = tuple(k for k in blur_kernel_sizes if k % 2 == 1 and k > 1) or (3,)
-        self.blur_sigma = blur_sigma
-        self.scalar_jitter_std = scalar_jitter_std
-        self.scalar_jitter_radial_power = scalar_jitter_radial_power
-        self.cutout_outer_bias = max(1.0, cutout_outer_bias)
-        c_span_min, c_span_max = cutout_radial_span
-        if c_span_max < c_span_min:
-            c_span_max = c_span_min
-        self.cutout_radial_span = (max(0.0, c_span_min), max(0.0, c_span_max))
-        t_span_min, t_span_max = cutout_theta_span
-        if t_span_max < t_span_min:
-            t_span_max = t_span_min
-        self.cutout_theta_span = (max(0.0, t_span_min), max(0.0, t_span_max))
-        self.configure_channels(channel_protocol or DEFAULT_CHANNEL_PROTOCOL, v_theta_index)
-
-    def configure_channels(
-        self,
-        channel_protocol: dict[str, Tuple[int, ...]],
-        v_theta_index: Optional[int],
-    ) -> None:
-        self.channel_protocol = {key: tuple(values) for key, values in channel_protocol.items()}
-        if v_theta_index is not None:
-            self.v_theta_index = int(v_theta_index)
-        else:
-            velocity = self.channel_protocol.get("velocity", ())
-            self.v_theta_index = (
-                velocity[TANGENTIAL_CHANNEL_OFFSET] if len(velocity) > TANGENTIAL_CHANNEL_OFFSET else None
-            )
-
-    def _wrap_theta(self, theta: torch.Tensor) -> torch.Tensor:
-        theta = torch.remainder(theta, math.tau)
-        theta = torch.where(theta > math.pi, math.tau - theta, theta)
-        return theta.clamp(min=self.angle_min, max=self.angle_max)
-
-    def _estimate_theta_step(self, theta: torch.Tensor) -> float:
-        if theta.shape[-1] < 2:
-            return 0.0
-        diff = theta[..., 1] - theta[..., 0]
-        return float(diff.mean())
-
-    def _maybe_theta_roll(self, x: torch.Tensor, r: torch.Tensor, theta: torch.Tensor):
-        if random.random() >= self.p_theta_roll:
-            return x, r, theta
-        width = theta.shape[-1]
-        if width <= 1:
-            return x, r, theta
-        shift = random.randint(1, width - 1)
-        delta = self._estimate_theta_step(theta) * shift
-        x = torch.roll(x, shifts=shift, dims=-1)
-        r = torch.roll(r, shifts=shift, dims=-1)
-        theta = torch.roll(theta, shifts=shift, dims=-1)
-        theta = self._wrap_theta(torch.remainder(theta + delta, math.tau))
-        return x, r, theta
-
-    def _maybe_theta_mirror(self, x: torch.Tensor, r: torch.Tensor, theta: torch.Tensor):
-        if random.random() >= self.p_theta_mirror:
-            return x, r, theta
-        x = torch.flip(x, dims=(-1,))
-        r = torch.flip(r, dims=(-1,))
-        theta = torch.flip(theta, dims=(-1,))
-        theta = self._wrap_theta(-theta)
-        if self.v_theta_index is not None and 0 <= self.v_theta_index < x.shape[0]:
-            x[self.v_theta_index] = -x[self.v_theta_index]
-        return x, r, theta
-
-    def _maybe_blur(self, x: torch.Tensor):
-        if random.random() >= self.p_gaussian_blur:
-            return x
-        k = random.choice(self.blur_kernel_sizes)
-        sigma_low, sigma_high = self.blur_sigma
-        sigma = max(1e-3, random.uniform(min(sigma_low, sigma_high), max(sigma_low, sigma_high)))
-        coords = torch.arange(k, dtype=x.dtype, device=x.device) - (k - 1) / 2
-        kernel_1d = torch.exp(-(coords**2) / (2 * sigma**2))
-        kernel_1d = kernel_1d / kernel_1d.sum()
-        kernel_2d = torch.outer(kernel_1d, kernel_1d)
-        kernel = kernel_2d.view(1, 1, k, k).repeat(x.shape[0], 1, 1, 1)
-        x_blur = F.conv2d(x.unsqueeze(0), kernel, padding=k // 2, groups=x.shape[0]).squeeze(0)
-        return x_blur
-
-    def _apply_scalar_aug(self, x: torch.Tensor, r_norm: torch.Tensor):
-        if self.scalar_jitter_std <= 0:
-            return
-        scalar_channels = self.channel_protocol.get("scalar", ())
-        if not scalar_channels:
-            return
-        radial_weight = torch.clamp(r_norm, 0.0, 1.0) ** self.scalar_jitter_radial_power
-        for idx in scalar_channels:
-            if idx >= x.shape[0]:
-                continue
-            field = x[idx]
-            jitter = torch.randn_like(field) * self.scalar_jitter_std * (0.3 + radial_weight)
-            perturbed = field + jitter * torch.abs(field)
-            x[idx] = torch.clamp(perturbed, min=0.0)
-
-    def _angle_diff(self, theta: torch.Tensor, center: float) -> torch.Tensor:
-        return torch.abs(torch.atan2(torch.sin(theta - center), torch.cos(theta - center)))
-
-    def _maybe_cutout(self, x: torch.Tensor, r: torch.Tensor, theta: torch.Tensor):
-        if random.random() >= self.p_cutout:
-            return x
-
-        r_min = float(r.min())
-        r_max = float(r.max())
-        if r_max - r_min < 1e-6:
-            return x
-        theta_min = float(theta.min())
-        theta_max = float(theta.max())
-
-        radial_center = r_min + (r_max - r_min) * random.betavariate(self.cutout_outer_bias, 1.0)
-        span_min, span_max = self.cutout_radial_span
-        radial_span = (r_max - r_min) * random.uniform(span_min, span_max)
-        radial_span = max(radial_span, 1e-6)
-        r_lower = max(r_min, radial_center - radial_span / 2)
-        r_upper = min(r_max, radial_center + radial_span / 2)
-        radial_band = (r >= r_lower) & (r <= r_upper)
-        inner_guard = r_max * 1e-2
-        radial_band = radial_band & (r >= inner_guard)
-
-        theta_center = random.uniform(theta_min, theta_max)
-        t_span_min, t_span_max = self.cutout_theta_span
-        theta_span = (theta_max - theta_min) * random.uniform(t_span_min, t_span_max)
-        theta_span = max(theta_span, 1e-6)
-        theta_width = theta_span / 2
-        theta_band = self._angle_diff(theta, theta_center) <= theta_width
-
-        mask = radial_band & theta_band
-        if not bool(mask.any().item()):
-            return x
-
-        ring = radial_band
-        for idx in range(x.shape[0]):
-            ring_values = x[idx][ring]
-            if ring_values.numel() == 0:
-                fill_value = x[idx].mean()
-            else:
-                fill_value = ring_values.mean()
-            x[idx][mask] = fill_value
-        return x
+class RadialCropAugmentor:
+    """
+    Implements radial cropping from outer to inner.
+    Data format: (C, H, W), Coord format: (2, H, W) where coord[0] is r, coord[1] is theta.
+    
+    The augmentation randomly selects a cutoff radius 'b' between (r_max * min_ratio) and r_max.
+    All data points where r > b are masked (set to 0).
+    """
+    def __init__(self, min_crop_ratio: float = 0.8, p_crop: float = 0.5):
+        self.min_crop_ratio = max(0.0, min(1.0, min_crop_ratio))
+        self.p_crop = max(0.0, min(1.0, p_crop))
 
     def __call__(self, x: torch.Tensor, coord: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if random.random() >= self.p_crop:
+            return x, coord
+        
+        # coord shape: (2, H, W), coord[0] is r
+        r_map = coord[0]
+        r_max = float(r_map.max())
+        r_min = float(r_map.min()) # Usually close to 0
+
+        # Determine cutoff b
+        # We want to keep range (0, b). 
+        # b should be randomly chosen in [r_max * min_ratio, r_max]
+        # But closer to r_min logic: technically user said "0 < b < a". 
+        # We ensure b is at least retaining a significant portion of the core.
+        
+        lower_bound = r_max * self.min_crop_ratio
+        if lower_bound <= r_min:
+             lower_bound = r_min + (r_max - r_min) * 0.1 # Safety guard
+
+        b = random.uniform(lower_bound, r_max)
+
+        # Create mask: True where r > b (the outer part to be removed/masked)
+        mask = r_map > b
+
+        if not mask.any():
+            return x, coord
+
         x = x.clone()
-        coord = coord.clone()
-        r = coord[0:1]
-        theta = coord[1:2]
-
-        x, r, theta = self._maybe_theta_roll(x, r, theta)
-        x, r, theta = self._maybe_theta_mirror(x, r, theta)
-        x = self._maybe_blur(x)
-        r_map = r.squeeze(0)
-        theta_map = theta.squeeze(0)
-        r_norm = (r_map - float(r_map.min())) / (float(r_map.max()) - float(r_map.min()) + 1e-6)
-        self._apply_scalar_aug(x, r_norm)
-        x = self._maybe_cutout(x, r_map, theta_map)
-
-        coord = torch.stack([r_map, theta_map], dim=0)
+        # Apply mask to all channels
+        # x is (C, H, W), mask is (H, W)
+        x[:, mask] = 0.0
+        
         return x, coord
 
 
@@ -247,7 +107,7 @@ class RandomSpatialAugmentor:
 # 1) Dataset: load .pt [x, coord, y, mbh, (Optional: y_bondi)]
 # =============================================
 class GalPTDataset(Dataset):
-    def __init__(self, pt_path, *, augmentor: Optional[RandomSpatialAugmentor] = None):
+    def __init__(self, pt_path, *, augmentor: Optional[RadialCropAugmentor] = None):
         super().__init__()
         try:
             loaded = torch.load(pt_path, weights_only=False)
@@ -311,16 +171,10 @@ class GalPTDataset(Dataset):
             self.groups = inv.long().view(-1, 1)
 
         self.augmentor = augmentor
-        self.channel_protocol = build_channel_protocol(self.x.shape[1])
-        velocity_channels = self.channel_protocol.get("velocity", ())
-        if len(velocity_channels) <= TANGENTIAL_CHANNEL_OFFSET:
-            raise ValueError(
-                f"Velocity channel protocol expects index {TANGENTIAL_CHANNEL_OFFSET} to exist, "
-                f"but only found channels {velocity_channels}."
-            )
-        self.v_theta_index = velocity_channels[TANGENTIAL_CHANNEL_OFFSET]
-        if self.augmentor is not None:
-            self.augmentor.configure_channels(self.channel_protocol, self.v_theta_index)
+        
+        # Previously we built channel protocol here for old augmentor. 
+        # With RadialCropAugmentor, we just mask everything, so channel awareness is less critical 
+        # unless we want to avoid masking specific channels. Just keeping it simple for now.
 
     def __len__(self):
         return self.y.size(0)
@@ -410,42 +264,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to Optuna/JSON HPO params file. Matching CLI args will be overridden",
     )
-    parser.add_argument(
-        "--aug_theta_roll_prob", type=float, default=0.5, help="Probability to apply a cyclic roll along the theta axis"
-    )
-    parser.add_argument(
-        "--aug_theta_mirror_prob",
-        type=float,
-        default=0.5,
-        help="Probability to mirror the sample across the theta axis",
-    )
-    parser.add_argument(
-        "--aug_cutout_prob", type=float, default=0.3, help="Probability to apply radial/theta cutout augmentation"
-    )
-    parser.add_argument(
-        "--aug_cutout_outer_bias", type=float, default=2.5, help="Beta distribution bias for cutout radial center"
-    )
-    parser.add_argument(
-        "--aug_cutout_radial_min", type=float, default=0.05, help="Minimum radial fraction for cutout span"
-    )
-    parser.add_argument(
-        "--aug_cutout_radial_max", type=float, default=0.2, help="Maximum radial fraction for cutout span"
-    )
-    parser.add_argument(
-        "--aug_cutout_theta_min", type=float, default=0.15, help="Minimum angular fraction for cutout span"
-    )
-    parser.add_argument(
-        "--aug_cutout_theta_max", type=float, default=0.5, help="Maximum angular fraction for cutout span"
-    )
-    parser.add_argument("--aug_blur_prob", type=float, default=0.2, help="Probability to apply Gaussian blur")
-    parser.add_argument("--aug_blur_sigma_min", type=float, default=0.6, help="Minimum sigma for Gaussian blur")
-    parser.add_argument("--aug_blur_sigma_max", type=float, default=1.6, help="Maximum sigma for Gaussian blur")
-    parser.add_argument(
-        "--aug_scalar_jitter_std", type=float, default=0.04, help="Std dev for multiplicative scalar field jitter"
-    )
-    parser.add_argument(
-        "--aug_scalar_jitter_radial_power", type=float, default=1.5, help="Radial weighting power for scalar jitter"
-    )
+    
+    # Augmentation args
+    parser.add_argument("--aug_prob", type=float, default=0.5, help="Probability to apply radial crop")
+    parser.add_argument("--aug_min_crop_ratio", type=float, default=0.7, help="Minimum ratio r_cut/r_max for cropping")
+    
     parser.add_argument("--log_dir", type=str, default="runs", help="Directory to write TensorBoard logs")
 
     return parser.parse_args()
@@ -485,19 +308,8 @@ def _apply_hpo_overrides(args: argparse.Namespace) -> argparse.Namespace:
         "pos_max_freq": float,
         "p_drop": float,
         "seed": int,
-        "aug_theta_roll_prob": float,
-        "aug_theta_mirror_prob": float,
-        "aug_cutout_prob": float,
-        "aug_cutout_outer_bias": float,
-        "aug_cutout_radial_min": float,
-        "aug_cutout_radial_max": float,
-        "aug_cutout_theta_min": float,
-        "aug_cutout_theta_max": float,
-        "aug_blur_prob": float,
-        "aug_blur_sigma_min": float,
-        "aug_blur_sigma_max": float,
-        "aug_scalar_jitter_std": float,
-        "aug_scalar_jitter_radial_power": float,
+        "aug_prob": float,
+        "aug_min_crop_ratio": float,
     }
 
     applied = []
@@ -518,13 +330,6 @@ def _apply_hpo_overrides(args: argparse.Namespace) -> argparse.Namespace:
         print(f"Loaded HPO params from {path}; applied keys: {', '.join(applied)}")
     else:
         print(f"[Warning] No matching keys found in HPO params: {path}")
-
-    if getattr(args, "aug_cutout_radial_max", 0.2) < getattr(args, "aug_cutout_radial_min", 0.05):
-        args.aug_cutout_radial_max = args.aug_cutout_radial_min
-    if getattr(args, "aug_cutout_theta_max", 0.5) < getattr(args, "aug_cutout_theta_min", 0.15):
-        args.aug_cutout_theta_max = args.aug_cutout_theta_min
-    if getattr(args, "aug_blur_sigma_max", 1.6) < getattr(args, "aug_blur_sigma_min", 0.6):
-        args.aug_blur_sigma_max = args.aug_blur_sigma_min
 
     return args
 
@@ -817,27 +622,12 @@ def main():
     # Datasets / Loaders
     cache_dir = args.cache_dir
     exp = args.exp_name
-    radial_span_min = max(0.0, min(1.0, args.aug_cutout_radial_min))
-    radial_span_max = max(radial_span_min, min(1.0, args.aug_cutout_radial_max))
-    theta_span_min = max(0.0, min(1.0, args.aug_cutout_theta_min))
-    theta_span_max = max(theta_span_min, min(1.0, args.aug_cutout_theta_max))
-    blur_sig_min = max(1e-3, args.aug_blur_sigma_min)
-    blur_sig_max = max(blur_sig_min, args.aug_blur_sigma_max)
-    train_augmentor = RandomSpatialAugmentor(
-        p_theta_roll=args.aug_theta_roll_prob,
-        p_theta_mirror=args.aug_theta_mirror_prob,
-        p_cutout=args.aug_cutout_prob,
-        erase_scale=(radial_span_min, radial_span_max),
-        angle_min=0.05,
-        angle_max=3.09,
-        p_gaussian_blur=max(0.0, min(1.0, args.aug_blur_prob)),
-        blur_sigma=(blur_sig_min, blur_sig_max),
-        scalar_jitter_std=max(0.0, args.aug_scalar_jitter_std),
-        scalar_jitter_radial_power=max(0.0, args.aug_scalar_jitter_radial_power),
-        cutout_outer_bias=max(1.0, args.aug_cutout_outer_bias),
-        cutout_radial_span=(radial_span_min, radial_span_max),
-        cutout_theta_span=(theta_span_min, theta_span_max),
+    
+    train_augmentor = RadialCropAugmentor(
+        min_crop_ratio=args.aug_min_crop_ratio,
+        p_crop=args.aug_prob
     )
+    
     train_ds = GalPTDataset(os.path.join(cache_dir, exp + "train.pt"), augmentor=train_augmentor)
     val_ds = GalPTDataset(os.path.join(cache_dir, exp + "val.pt"))
     test_ds = GalPTDataset(os.path.join(cache_dir, exp + "test.pt"))
