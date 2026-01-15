@@ -15,6 +15,7 @@ for path in {cwd, project_root}:
 import argparse
 from datetime import datetime
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,7 +23,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 
-from Experiment.Network import AccretionTransformer, HybridAccretionTransformer
+from Experiment.Network import AccretionTransformer, MACNetRes_mbh, MACNetFiLM
 
 
 VELOCITY_CHANNEL_COUNT = 3
@@ -267,6 +268,14 @@ class GalPTDataset(Dataset):
         def _ensure_tensor(arr, *, name: str):
             if isinstance(arr, torch.Tensor):
                 return arr.to(dtype=torch.float32)
+            
+            # Special handling for potentially string-based 'groups'
+            if name == "groups":
+                if isinstance(arr, list):
+                    arr = np.array(arr)
+                if isinstance(arr, np.ndarray) and arr.dtype.kind in 'SU':
+                    return arr # Keep as numpy string array for later processing
+
             try:
                 return torch.as_tensor(arr, dtype=torch.float32)
             except Exception as inner_exc:
@@ -280,20 +289,26 @@ class GalPTDataset(Dataset):
         self.mbh = _ensure_tensor(self.mbh, name="mbh").view(-1, 1)
         self.y_bondi = _ensure_tensor(self.y_bondi, name="y_bondi").view(-1, 1) if self.y_bondi is not None else None
 
-        groups_tensor = _ensure_tensor(self.groups, name="groups")
-        if groups_tensor.ndim == 2 and groups_tensor.size(1) > 1:
-            # Keep only the last column if multiple columns exist (e.g., [type, subtype])
-            # to ensure one label per sample.
-            raw_groups = groups_tensor[:, -1:]
+        groups_raw = _ensure_tensor(self.groups, name="groups")
+        if isinstance(groups_raw, np.ndarray) and groups_raw.dtype.kind in 'SU':
+            # Handle string groups
+            raw_groups = groups_raw.reshape(-1, 1)
+            unique_groups, inv = np.unique(raw_groups, return_inverse=True)
+            self.n_groups = len(unique_groups)
+            self.groups = torch.from_numpy(inv).long().view(-1, 1)
         else:
-            raw_groups = groups_tensor.view(-1, 1)
+            # Handle numeric groups (already a tensor from _ensure_tensor)
+            if groups_raw.ndim == 2 and groups_raw.size(1) > 1:
+                # Keep only the last column if multiple columns exist (e.g., [type, subtype])
+                # to ensure one label per sample.
+                raw_groups = groups_raw[:, -1:]
+            else:
+                raw_groups = groups_raw.view(-1, 1)
 
-        # Remap groups to 0..n_groups-1 for robust indexing in eval_epoch
-        unique_groups = torch.unique(raw_groups)
-        self.n_groups = len(unique_groups)
-        self.groups = torch.zeros_like(raw_groups, dtype=torch.long)
-        for i, g in enumerate(unique_groups):
-            self.groups[raw_groups == g] = i
+            # Remap groups to 0..n_groups-1 for robust indexing in eval_epoch
+            unique_groups, inv = torch.unique(raw_groups, return_inverse=True)
+            self.n_groups = len(unique_groups)
+            self.groups = inv.long().view(-1, 1)
 
         self.augmentor = augmentor
         self.channel_protocol = build_channel_protocol(self.x.shape[1])
@@ -325,7 +340,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train MACNetRes with MBH input")
     parser.add_argument("--cache_dir", type=str, default=".cache", help="Directory containing cached .pt datasets")
     parser.add_argument(
-        "--exp_name", type=str, default="Exp2_", help="Experiment name prefix used for cache and saving"
+        "--exp_name", type=str, default="Exp5_", help="Experiment name prefix used for cache and saving"
     )
     parser.add_argument("--batch_size", type=int, default=64, help="Training batch size")
     parser.add_argument("--epochs", type=int, default=500, help="Maximum number of training epochs")
@@ -378,9 +393,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model_type",
         type=str,
-        choices=["transformer", "hybrid"],
+        choices=["transformer", "resnet", "resfilm"],
         default="transformer",
-        help="Type of model architecture: 'transformer' or 'hybrid' (CNN + Transformer)",
+        help="Type of model architecture: 'transformer', 'resnet', or 'resfilm'",
     )
     parser.add_argument("--d_model", type=int, default=256, help="Model embedding dimension (d_model)")
     parser.add_argument("--n_layers", type=int, default=4, help="Number of transformer layers")
@@ -626,7 +641,10 @@ def train_one_epoch(model, loader, criterion, optimizer, device, scaler=None, gr
         optimizer.zero_grad(set_to_none=True)
         if scaler is not None:
             with torch.autocast(device_type=device.type, dtype=torch.float16):
-                pred = model(x, r, theta, mbh)  # (B,)
+                if isinstance(model, (MACNetRes_mbh, MACNetFiLM)):
+                    pred = model(x, mbh)
+                else:
+                    pred = model(x, r, theta, mbh)  # (B,)
                 loss = criterion(pred, y)
             scaler.scale(loss).backward()
             if grad_clip and grad_clip > 0:
@@ -637,7 +655,10 @@ def train_one_epoch(model, loader, criterion, optimizer, device, scaler=None, gr
             if scheduler is not None:
                 scheduler.step()
         else:
-            pred = model(x, r, theta, mbh)
+            if isinstance(model, (MACNetRes_mbh, MACNetFiLM)):
+                pred = model(x, mbh)
+            else:
+                pred = model(x, r, theta, mbh)
             loss = criterion(pred, y)
             loss.backward()
             if grad_clip and grad_clip > 0:
@@ -698,7 +719,10 @@ def eval_epoch(model, loader, criterion, device, writer, epoch):
             coord = batch[1].to(device, non_blocking=True)
             mbh = batch[2].to(device, non_blocking=True).view(-1)
             y = batch[3].to(device, non_blocking=True).view(-1)
-            pred = model(x, coord[:, 0:1], coord[:, 1:2], mbh)
+            if isinstance(model, (MACNetRes_mbh, MACNetFiLM)):
+                pred = model(x, mbh)
+            else:
+                pred = model(x, coord[:, 0:1], coord[:, 1:2], mbh)
             loss = criterion(pred, y).mean().item()
             total_loss += loss * y.size(0)
             n_samples += y.size(0)
@@ -717,7 +741,10 @@ def eval_epoch(model, loader, criterion, device, writer, epoch):
         y = batch[3].to(device, non_blocking=True).view(-1)
         groups = batch[4].view(-1).to(device=mbh.device, dtype=torch.long)
 
-        pred = model(x, r, theta, mbh)
+        if isinstance(model, (MACNetRes_mbh, MACNetFiLM)):
+            pred = model(x, mbh)
+        else:
+            pred = model(x, r, theta, mbh)
 
         if isinstance(criterion, WeightedLoss):
             base_loss = criterion.base_criterion(pred, y)  # shape: (B, ...) or (B,)
@@ -834,17 +861,8 @@ def main():
     # Model
     c_in = train_ds.x.shape[1]
     if args.model_type == "hybrid":
-        model = HybridAccretionTransformer(
-            c_in=c_in,
-            d_model=args.d_model,
-            n_layers=args.n_layers,
-            n_heads=args.n_heads,
-            d_ff=args.d_ff,
-            pos_num_bands=args.pos_num_bands,
-            pos_max_freq=args.pos_max_freq,
-            p_drop=args.p_drop,
-        ).to(device)
-    else:
+        ValueError("Hybrid model type is not implemented in this script.")
+    elif args.model_type == "transformer":
         model = AccretionTransformer(
             c_in=c_in,
             d_model=args.d_model,
@@ -855,6 +873,14 @@ def main():
             pos_max_freq=args.pos_max_freq,
             p_drop=args.p_drop,
         ).to(device)
+    elif args.model_type == "resnet":
+        model = MACNetRes_mbh(
+            in_channels=c_in,
+        ).to(device)
+    elif args.model_type == "resfilm":
+        model = MACNetFiLM(
+            in_channels=c_in,
+        ).to(device)
 
     try:
         model.eval()
@@ -863,15 +889,24 @@ def main():
             # Use a tiny temp loader with 0 workers to fetch a sample for the graph
             temp_loader = DataLoader(train_ds, batch_size=2, shuffle=True, num_workers=0)
             sample_x, sample_coord, sample_mbh, _, _, _ = next(iter(temp_loader))
-            writer.add_graph(
-                model,
-                (
-                    sample_x.to(device),
-                    sample_coord[:, 0:1].to(device),
-                    sample_coord[:, 1:2].to(device),
-                    sample_mbh.view(-1).to(device),
-                ),
-            )
+            if isinstance(model, (MACNetRes_mbh, MACNetFiLM)):
+                writer.add_graph(
+                    model,
+                    (
+                        sample_x.to(device),
+                        sample_mbh.view(-1).to(device),
+                    ),
+                )
+            else:
+                writer.add_graph(
+                    model,
+                    (
+                        sample_x.to(device),
+                        sample_coord[:, 0:1].to(device),
+                        sample_coord[:, 1:2].to(device),
+                        sample_mbh.view(-1).to(device),
+                    ),
+                )
     except Exception as exc:
         print(f"Warning: could not write model graph to TensorBoard: {exc}")
 

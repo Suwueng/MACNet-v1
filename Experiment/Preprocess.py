@@ -102,36 +102,27 @@ def get_folder_paths(configs_path, gal_type, resolution):
     return folder_abs_paths
 
 
+# Define global paths for external imports (e.g. by notebooks)
+try:
+    _resolution = "coarse"
+    _configs_dir = ".config"
+    Exp_eg_folder_paths = get_folder_paths(_configs_dir, "elliptical_galaxy", _resolution)
+    Exp_dg_folder_paths = get_folder_paths(_configs_dir, "disk_galaxy", _resolution)
+except Exception as e:
+    # This might happen if CWD is not project root during import
+    Exp_eg_folder_paths = []
+    Exp_dg_folder_paths = []
+
+
 if __name__ == "__main__":
     resolution = "coarse"
     configs_dir = ".config"
 
-    exp_eg_folder_paths = get_folder_paths(configs_dir, "elliptical_galaxy", resolution)
-    exp_dg_folder_paths = get_folder_paths(configs_dir, "disk_galaxy", resolution)
+    # Use the global variables (renamed to match notebook import expectation)
+    exp_eg_folder_paths = Exp_eg_folder_paths
+    exp_dg_folder_paths = Exp_dg_folder_paths
+    
     exp_all_folder_paths = exp_eg_folder_paths + exp_dg_folder_paths
-
-    # # Create each type galaxy cache
-    # for i, path in enumerate(
-    #     [exp_eg_folder_paths, exp_dg_folder_paths, exp_all_folder_paths]
-    # ):
-    #     print(f"Processing Experiment {i+1}...")
-    #     save_path = os.path.join(".cache", f"Exp{i+1}_")
-
-    #     cache = CachePt().load(path)
-    #     train_cache, val_cache, test_cache = cache.split(
-    #         train_size=0.6, validation_size=0.2, stratify="groups"
-    #     )
-
-    #     train_cache = train_cache.process(threshold=-5, balance="oversample")
-    #     val_cache = val_cache.process(threshold=-5)
-    #     test_cache = test_cache.process(threshold=-5)
-    #     print(f"  Training set size:   {len(train_cache)}")
-    #     print(f"  Validation set size: {len(val_cache)}")
-    #     print(f"  Testing set size:    {len(test_cache)}")
-
-    #     mean, std = train_cache.to_pt(save_path + "train.pt")
-    #     val_cache.to_pt(save_path + "val.pt", mean, std)
-    #     test_cache.to_pt(save_path + "test.pt", mean, std)
 
     # Create in- and out-datasets for each galaxy type
     exp_eg_folder_paths_in = exp_eg_folder_paths.copy()

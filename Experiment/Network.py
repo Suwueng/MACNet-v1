@@ -254,7 +254,94 @@ class MACNetRes_mbh(nn.Module):
         x = self.flatten_block(x)
         x = torch.cat((x, mbh), dim=1)
         x = self.liner_block(x)
-        return x
+        return x.view(-1)
+
+
+class FiLMResidual(nn.Module):
+    def __init__(self, in_channels, out_channels, use_1x1conv=False, strides=1):
+        super().__init__()
+        self.out_channels = out_channels
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=strides)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        if use_1x1conv:
+            self.conv3 = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=strides)
+        else:
+            self.conv3 = None
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+    def forward(self, X, gamma, beta):
+        Y = nn.functional.relu(self.bn1(self.conv1(X)))
+        Y = self.bn2(self.conv2(Y))
+        
+        # FiLM modulation
+        if gamma is not None and beta is not None:
+             # gamma, beta: [B, C] -> [B, C, 1, 1]
+            Y = (1 + gamma.view(-1, self.out_channels, 1, 1)) * Y + beta.view(-1, self.out_channels, 1, 1)
+
+        if self.conv3:
+            X = self.conv3(X)
+        return nn.functional.relu(Y + X)
+
+
+class MACNetFiLM(nn.Module):
+    def __init__(self, in_channels=15):
+        super().__init__()
+        in_c = in_channels
+        self.blocks = nn.ModuleList()
+        self.channel_counts = []
+        
+        # Consistent with MACNetRes_mbh
+        res_arch = ((2, 32, True), (2, 64, True), (2, 128, False), (2, 256, False))
+        
+        for num_residuals, out_channels, half in res_arch:
+            for i in range(num_residuals):
+                stride = 1
+                use_1x1 = False
+                curr_in = out_channels
+                
+                if i == 0:
+                    stride = 2 if half else 1
+                    use_1x1 = True
+                    curr_in = in_c
+                
+                self.blocks.append(FiLMResidual(curr_in, out_channels, use_1x1conv=use_1x1, strides=stride))
+                self.channel_counts.append(out_channels)
+            
+            in_c = out_channels
+
+        self.total_features = sum(self.channel_counts)
+        # FiLM Generator
+        self.film_generator = nn.Sequential(
+            nn.Linear(1, 64),
+            nn.LeakyReLU(),
+            nn.Linear(64, self.total_features * 2)
+        )
+
+        self.flatten_block = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)), nn.Flatten())
+        
+        # Final regression from last block features
+        last_out_channels = res_arch[-1][1]
+        self.liner_block = nn.Sequential(
+            nn.Linear(last_out_channels, last_out_channels // 2),
+            nn.LeakyReLU(),
+            nn.Linear(last_out_channels // 2, 1),
+        )
+
+    def forward(self, x, mbh):
+        mbh = torch.tensor(mbh, dtype=torch.float32, device=x.device) if not isinstance(mbh, torch.Tensor) else mbh
+        mbh = mbh.float().to(x.device).view(-1, 1)
+
+        film_params = self.film_generator(mbh)
+        gammas_betas = torch.split(film_params, [c * 2 for c in self.channel_counts], dim=1)
+        
+        for block, params in zip(self.blocks, gammas_betas):
+            gamma, beta = torch.chunk(params, 2, dim=1)
+            x = block(x, gamma, beta)
+            
+        x = self.flatten_block(x)
+        x = self.liner_block(x)
+        return x.view(-1)
 
 
 # Transformer-based model
@@ -591,4 +678,4 @@ class AccretionTransformer(nn.Module):
         y = self.head(cls_out).squeeze(-1)  # (B,)
         return y
 
-
+        
