@@ -194,7 +194,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train MACNetRes with MBH input")
     parser.add_argument("--cache_dir", type=str, default=".cache", help="Directory containing cached .pt datasets")
     parser.add_argument(
-        "--exp_name", type=str, default="Exp5_", help="Experiment name prefix used for cache and saving"
+        "--exp_name", type=str, default="Exp5_", help="Experiment name prefix used for saving results"
+    )
+    parser.add_argument(
+        "--data_exp", type=str, default=None, help="Experiment name prefix for loading data (default: same as exp_name)"
     )
     parser.add_argument("--batch_size", type=int, default=64, help="Training batch size")
     parser.add_argument("--epochs", type=int, default=500, help="Maximum number of training epochs")
@@ -600,8 +603,9 @@ def eval_epoch(model, loader, criterion, device, writer, epoch):
 # =============================================
 # 4) Main
 # =============================================
-def main():
-    args = parse_args()
+def main(args=None):
+    if args is None:
+        args = parse_args()
     args = _apply_hpo_overrides(args)
     set_seed(args.seed)
     if args.cudnn_benchmark:
@@ -622,15 +626,16 @@ def main():
     # Datasets / Loaders
     cache_dir = args.cache_dir
     exp = args.exp_name
+    data_exp = args.data_exp if args.data_exp else exp
     
     train_augmentor = RadialCropAugmentor(
         min_crop_ratio=args.aug_min_crop_ratio,
         p_crop=args.aug_prob
     )
     
-    train_ds = GalPTDataset(os.path.join(cache_dir, exp + "train.pt"), augmentor=train_augmentor)
-    val_ds = GalPTDataset(os.path.join(cache_dir, exp + "val.pt"))
-    test_ds = GalPTDataset(os.path.join(cache_dir, exp + "test.pt"))
+    train_ds = GalPTDataset(os.path.join(cache_dir, data_exp + "train.pt"), augmentor=train_augmentor)
+    val_ds = GalPTDataset(os.path.join(cache_dir, data_exp + "val.pt"))
+    test_ds = GalPTDataset(os.path.join(cache_dir, data_exp + "test.pt"))
 
     common = dict(batch_size=args.batch_size, pin_memory=(device.type == "cuda"), drop_last=False)
     dl_extra = {}
@@ -788,7 +793,7 @@ def main():
 
     if best_val == float("inf") or not os.path.exists(best_path):
         print("No improvement was found during training. Best model not saved.")
-        return
+        return float("inf")
 
     print(f"Best val loss: {best_val:.6f}. Loading best and testing.")
     ckpt = torch.load(best_path, map_location=device)
@@ -797,6 +802,8 @@ def main():
     test_loss, group_means = eval_epoch(model, test_loader, criterion, device, writer, epoch=0)
     print(f"Test loss: {test_loss:.6f}, per-domain: {group_means}")
     print(f"Best model saved to: {best_path}")
+    
+    return best_val
 
 
 if __name__ == "__main__":

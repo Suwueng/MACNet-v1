@@ -151,9 +151,9 @@ if __name__ == "__main__":
     exp_eg_folder_paths_in = exp_eg_folder_paths.copy()
     exp_dg_folder_paths_in = exp_dg_folder_paths.copy()
     exp_eg_folder_paths_in.pop(2)
-    exp_dg_folder_paths_in.pop(2)
+    exp_dg_folder_paths_in.pop(4)
     exp_eg_folder_paths_out = [exp_eg_folder_paths[2]]
-    exp_dg_folder_paths_out = [exp_dg_folder_paths[2]]
+    exp_dg_folder_paths_out = [exp_dg_folder_paths[4]]
 
     for i, (in_paths, out_path) in enumerate(
         [
