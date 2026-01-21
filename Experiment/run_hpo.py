@@ -13,7 +13,7 @@ if current_dir not in sys.path:
 import main_ViT
 
 # Define the number of trials and timeout (in seconds)
-N_TRIALS = 200
+N_TRIALS = 600
 TIMEOUT  = 3600 * 6  # 3 hours
 
 def objective(trial, data_exp):
