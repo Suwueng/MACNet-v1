@@ -7,7 +7,7 @@ import json
 # Configuration Source
 # =============================================================================
 # Specify the experiment key from ExperimentSetting.json to run
-TARGET_EXPERIMENT = "Exp5_ViT" 
+TARGET_EXPERIMENT = "Exp2_ViT" 
 
 def load_config(exp_key):
     """

@@ -80,9 +80,7 @@ def training(
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.amp.autocast(
-                device_type="cuda", enabled=(use_amp and device.type == "cuda")
-            ):
+            with torch.amp.autocast(device_type="cuda", enabled=(use_amp and device.type == "cuda")):
                 outputs = model(inputs, mbh)
                 loss = criterion(outputs, labels)
 
@@ -118,9 +116,7 @@ def training(
                 mbh = mbh.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
 
-                with torch.amp.autocast(
-                    device_type="cuda", enabled=(use_amp and device.type == "cuda")
-                ):
+                with torch.amp.autocast(device_type="cuda", enabled=(use_amp and device.type == "cuda")):
                     outputs = model(inputs, mbh)
                     loss = criterion(outputs, labels)
 
@@ -146,15 +142,10 @@ def training(
         else:
             epochs_no_improve += 1
 
-        if (
-            save_every
-            and isinstance(save_every, int)
-            and save_every > 0
-            and ((epoch + 1) % save_every == 0)
-        ):
-            ckpt_path = (
-                save_path or os.path.join("Results", "checkpoint.pth")
-            ).replace("best_model", f"epoch{epoch+1}")
+        if save_every and isinstance(save_every, int) and save_every > 0 and ((epoch + 1) % save_every == 0):
+            ckpt_path = (save_path or os.path.join("Results", "checkpoint.pth")).replace(
+                "best_model", f"epoch{epoch+1}"
+            )
             torch.save(model.state_dict(), ckpt_path)
             print(f"Checkpoint saved: {ckpt_path}")
 
@@ -177,9 +168,7 @@ def training(
                 inputs = inputs.to(device, non_blocking=True)
                 mbh = mbh.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
-                with torch.amp.autocast(
-                    device_type="cuda", enabled=(use_amp and device.type == "cuda")
-                ):
+                with torch.amp.autocast(device_type="cuda", enabled=(use_amp and device.type == "cuda")):
                     outputs = model(inputs, mbh)
                     loss = criterion(outputs, labels)
                 test_running_loss += loss.item() * inputs.size(0)
@@ -198,14 +187,10 @@ class Residual(nn.Module):
 
     def __init__(self, in_channels, out_channels, use_1x1conv=False, strides=1):
         super().__init__()
-        self.conv1 = nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, padding=1, stride=strides
-        )
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=strides)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         if use_1x1conv:
-            self.conv3 = nn.Conv2d(
-                in_channels, out_channels, kernel_size=1, stride=strides
-            )
+            self.conv3 = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=strides)
         else:
             self.conv3 = None
         self.bn1 = nn.BatchNorm2d(out_channels)
@@ -224,9 +209,7 @@ def resnet_block(num_residuals, in_channels, out_channels, half=False):
     for i in range(num_residuals):
         if i == 0:
             if half:
-                layers.append(
-                    Residual(in_channels, out_channels, use_1x1conv=True, strides=2)
-                )
+                layers.append(Residual(in_channels, out_channels, use_1x1conv=True, strides=2))
             else:
                 layers.append(Residual(in_channels, out_channels, use_1x1conv=True))
         else:
@@ -264,11 +247,7 @@ class MACNetRes_mbh(nn.Module):
         )
 
     def forward(self, x, mbh):
-        mbh = (
-            torch.tensor(mbh, dtype=torch.float32, device=x.device)
-            if not isinstance(mbh, torch.Tensor)
-            else mbh
-        )
+        mbh = torch.tensor(mbh, dtype=torch.float32, device=x.device) if not isinstance(mbh, torch.Tensor) else mbh
         mbh = mbh.float().to(x.device).view(-1, 1)
 
         x = self.res_blocks(x)
@@ -282,14 +261,10 @@ class FiLMResidual(nn.Module):
     def __init__(self, in_channels, out_channels, use_1x1conv=False, strides=1):
         super().__init__()
         self.out_channels = out_channels
-        self.conv1 = nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, padding=1, stride=strides
-        )
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=strides)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         if use_1x1conv:
-            self.conv3 = nn.Conv2d(
-                in_channels, out_channels, kernel_size=1, stride=strides
-            )
+            self.conv3 = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=strides)
         else:
             self.conv3 = None
         self.bn1 = nn.BatchNorm2d(out_channels)
@@ -302,9 +277,7 @@ class FiLMResidual(nn.Module):
         # FiLM modulation
         if gamma is not None and beta is not None:
             # gamma, beta: [B, C] -> [B, C, 1, 1]
-            Y = (1 + gamma.view(-1, self.out_channels, 1, 1)) * Y + beta.view(
-                -1, self.out_channels, 1, 1
-            )
+            Y = (1 + gamma.view(-1, self.out_channels, 1, 1)) * Y + beta.view(-1, self.out_channels, 1, 1)
 
         if self.conv3:
             X = self.conv3(X)
@@ -332,20 +305,14 @@ class MACNetFiLM(nn.Module):
                     use_1x1 = True
                     curr_in = in_c
 
-                self.blocks.append(
-                    FiLMResidual(
-                        curr_in, out_channels, use_1x1conv=use_1x1, strides=stride
-                    )
-                )
+                self.blocks.append(FiLMResidual(curr_in, out_channels, use_1x1conv=use_1x1, strides=stride))
                 self.channel_counts.append(out_channels)
 
             in_c = out_channels
 
         self.total_features = sum(self.channel_counts)
         # FiLM Generator
-        self.film_generator = nn.Sequential(
-            nn.Linear(1, 64), nn.LeakyReLU(), nn.Linear(64, self.total_features * 2)
-        )
+        self.film_generator = nn.Sequential(nn.Linear(1, 64), nn.LeakyReLU(), nn.Linear(64, self.total_features * 2))
 
         self.flatten_block = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)), nn.Flatten())
 
@@ -358,17 +325,11 @@ class MACNetFiLM(nn.Module):
         )
 
     def forward(self, x, mbh):
-        mbh = (
-            torch.tensor(mbh, dtype=torch.float32, device=x.device)
-            if not isinstance(mbh, torch.Tensor)
-            else mbh
-        )
+        mbh = torch.tensor(mbh, dtype=torch.float32, device=x.device) if not isinstance(mbh, torch.Tensor) else mbh
         mbh = mbh.float().to(x.device).view(-1, 1)
 
         film_params = self.film_generator(mbh)
-        gammas_betas = torch.split(
-            film_params, [c * 2 for c in self.channel_counts], dim=1
-        )
+        gammas_betas = torch.split(film_params, [c * 2 for c in self.channel_counts], dim=1)
 
         for block, params in zip(self.blocks, gammas_betas):
             gamma, beta = torch.chunk(params, 2, dim=1)
@@ -424,9 +385,7 @@ class FourierPositionalEncoding2D(nn.Module):
         # for each of r,theta -> sin&cos per band -> 2 * num_bands
         return base + 2 * 2 * self.num_bands
 
-    def forward(
-        self, r: torch.Tensor, theta: torch.Tensor, normalize: bool = True
-    ) -> torch.Tensor:
+    def forward(self, r: torch.Tensor, theta: torch.Tensor, normalize: bool = True) -> torch.Tensor:
         """
         r, theta: (B, 1, H, W)
         Returns: (B, Dpos, H, W)
@@ -437,29 +396,25 @@ class FourierPositionalEncoding2D(nn.Module):
         if self.r_log_scale:
             r_safe = torch.clamp(r, min=self.eps)
             r_n = (torch.log(r_safe) - torch.log(r_safe).amin((2, 3), True)) / (
-                torch.log(r_safe).amax((2, 3), True)
-                - torch.log(r_safe).amin((2, 3), True)
-                + self.eps
+                torch.log(r_safe).amax((2, 3), True) - torch.log(r_safe).amin((2, 3), True) + self.eps
             )
         else:
             if normalize:
-                r_n = (r - r.amin((2, 3), True)) / (
-                    r.amax((2, 3), True) - r.amin((2, 3), True) + self.eps
-                )
+                r_n = (r - r.amin((2, 3), True)) / (r.amax((2, 3), True) - r.amin((2, 3), True) + self.eps)
             else:
                 r_n = (r - r.min()) / (r.max() - r.min() + self.eps)
 
         # theta handling
         if self.theta_pi_periodic:
             theta = self._wrap_pi(theta)  # [0, π)
-            theta_unit = theta / math.pi  # [0,1) for optional raw export
+            # theta_unit = theta / math.pi  # [0,1) for optional raw export
             # even harmonics: 2k * theta
             # we reuse log-spaced freq_bands on the base, then multiply by 2
             fb_theta = (2.0 * self.freq_bands).view(1, -1, 1).to(theta.device)
         else:
             # fallback to 2π periodic if ever needed
             theta = torch.remainder(theta, 2 * math.pi)
-            theta_unit = theta / (2 * math.pi)
+            # theta_unit = theta / (2 * math.pi)
             fb_theta = self.freq_bands.view(1, -1, 1).to(theta.device)
 
         # if normalize:
@@ -483,8 +438,8 @@ class FourierPositionalEncoding2D(nn.Module):
         # sin/cos
         r_sin = torch.sin(2 * math.pi * r_proj)
         r_cos = torch.cos(2 * math.pi * r_proj)
-        t_sin = torch.sin(t_proj)
-        t_cos = torch.cos(t_proj)
+        t_sin = torch.sin(2 * t_proj)
+        t_cos = torch.cos(2 * t_proj)
 
         pos_list = []
         if self.include_input:
@@ -514,9 +469,7 @@ class FiLMConditioner(nn.Module):
             nn.Linear(hidden, 2 * n_layers * d_model),
         )
 
-    def forward(
-        self, bh_mass: torch.Tensor
-    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+    def forward(self, bh_mass: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         """
         bh_mass: (B,) or (B,1)
         Returns lists gamma_list, beta_list each len=n_layers,
@@ -552,9 +505,7 @@ class TransformerBlock(nn.Module):
     def __init__(self, d_model: int, n_heads: int, d_ff: int, p_drop: float = 0.1):
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
-        self.attn = nn.MultiheadAttention(
-            d_model, n_heads, dropout=p_drop, batch_first=True
-        )
+        self.attn = nn.MultiheadAttention(d_model, n_heads, dropout=p_drop, batch_first=True)
         self.drop1 = nn.Dropout(p_drop)
         self.norm2 = nn.LayerNorm(d_model)
         self.mlp = MLP(d_model, d_ff, p_drop)
@@ -632,12 +583,7 @@ class AccretionTransformer(nn.Module):
 
         # Transformer encoder
         self.blocks = nn.ModuleList(
-            [
-                TransformerBlock(
-                    d_model=d_model, n_heads=n_heads, d_ff=d_ff, p_drop=p_drop
-                )
-                for _ in range(n_layers)
-            ]
+            [TransformerBlock(d_model=d_model, n_heads=n_heads, d_ff=d_ff, p_drop=p_drop) for _ in range(n_layers)]
         )
 
         # FiLM conditioner (per-layer γ/β)

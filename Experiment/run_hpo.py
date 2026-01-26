@@ -1,7 +1,7 @@
 import os
 import sys
-import optuna
 import torch
+import optuna
 import gc
 from functools import partial
 
@@ -14,7 +14,8 @@ import main_ViT
 
 # Define the number of trials and timeout (in seconds)
 N_TRIALS = 600
-TIMEOUT  = 3600 * 6  # 3 hours
+TIMEOUT = 3600 * 12  # 3 hours
+
 
 def objective(trial, data_exp):
     # 1. Clean up previous runs (memory)
@@ -27,18 +28,18 @@ def objective(trial, data_exp):
 
     # 3. Suggest Hyperparameters
     #    Define your search space here.
-    
+
     # --- Architecture ---
     args.model_type = "transformer"
-    args.d_model = trial.suggest_categorical("d_model", [16, 32,64, 128, 256, 512])
+    args.d_model = trial.suggest_categorical("d_model", [16, 32, 64, 128, 256, 512])
     # n_layers must match d_model/heads constraint typically, or just simple
     args.n_layers = trial.suggest_int("n_layers", 2, 12)
     args.n_heads = trial.suggest_categorical("n_heads", [2, 4, 8])
     args.d_ff = trial.suggest_categorical("d_ff", [128, 256, 512, 1024, 2048])
-    
+
     # --- Positional Encoding ---
     args.pos_num_bands = trial.suggest_categorical("pos_runsnum_bands", [8, 16, 32, 64])
-    
+
     # --- Dropout ---
     args.p_drop = trial.suggest_float("p_drop", 0.0, 0.5, step=0.1)
 
@@ -50,10 +51,10 @@ def objective(trial, data_exp):
 
     # --- Training Config (Fixed for HPO speed) ---
     args.epochs = 90  # Keep epochs relatively low for HPO, or use pruning
-    args.patience = 15 # Aggressive early stopping for HPO
-    args.num_workers = 0 # Safer on Windows
-    args.exp_name = f"HPO_Trial{trial.number:03d}_" # Unique name for saving results
-    args.data_exp = data_exp # FIXED: Base name for loading data
+    args.patience = 15  # Aggressive early stopping for HPO
+    args.num_workers = 0  # Safer on Windows
+    args.exp_name = f"HPO_Trial{trial.number:03d}_"  # Unique name for saving results
+    args.data_exp = data_exp  # FIXED: Base name for loading data
     args.log_dir = os.path.join("runs", "HPO")
 
     # Ensure d_model is divisible by n_heads
@@ -76,24 +77,19 @@ def objective(trial, data_exp):
 
 if __name__ == "__main__":
     # Create storage for persistence (optional)
-    data_exp = "Exp2_"
+    data_exp = "Exp1_"
     study_name = f".cache/{data_exp}macnet_vit_hpo"
     storage_name = "sqlite:///{}.db".format(study_name)
-    
-    study = optuna.create_study(
-        study_name=study_name,
-        storage=storage_name,
-        direction="minimize",
-        load_if_exists=True
-    )
+
+    study = optuna.create_study(study_name=study_name, storage=storage_name, direction="minimize", load_if_exists=True)
 
     print("Starting optimization...")
     study.optimize(lambda t: objective(t, data_exp), n_trials=N_TRIALS, timeout=TIMEOUT)
 
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("Optimization Finished!")
-    print("="*50)
-    
+    print("=" * 50)
+
     print("Best Trial:")
     trial = study.best_trial
     print(f"  Value: {trial.value}")
