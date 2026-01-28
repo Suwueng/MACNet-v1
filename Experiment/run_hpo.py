@@ -14,7 +14,7 @@ import main_ViT
 
 # Define the number of trials and timeout (in seconds)
 N_TRIALS = 600
-TIMEOUT = 3600 * 12  # 3 hours
+TIMEOUT = 3600 * 3  # 3 hours
 
 
 def objective(trial, data_exp):
@@ -56,6 +56,7 @@ def objective(trial, data_exp):
     args.exp_name = f"HPO_Trial{trial.number:03d}_"  # Unique name for saving results
     args.data_exp = data_exp  # FIXED: Base name for loading data
     args.log_dir = os.path.join("runs", "HPO")
+    args.no_save = True
 
     # Ensure d_model is divisible by n_heads
     if args.d_model % args.n_heads != 0:

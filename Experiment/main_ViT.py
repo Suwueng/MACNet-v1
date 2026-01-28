@@ -60,10 +60,11 @@ class RadialCropAugmentor:
     """
     Implements radial cropping from outer to inner.
     Data format: (C, H, W), Coord format: (2, H, W) where coord[0] is r, coord[1] is theta.
-    
+
     The augmentation randomly selects a cutoff radius 'b' between (r_max * min_ratio) and r_max.
     All data points where r > b are masked (set to 0).
     """
+
     def __init__(self, min_crop_ratio: float = 0.8, p_crop: float = 0.5):
         self.min_crop_ratio = max(0.0, min(1.0, min_crop_ratio))
         self.p_crop = max(0.0, min(1.0, p_crop))
@@ -71,21 +72,21 @@ class RadialCropAugmentor:
     def __call__(self, x: torch.Tensor, coord: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if random.random() >= self.p_crop:
             return x, coord
-        
+
         # coord shape: (2, H, W), coord[0] is r
         r_map = coord[0]
         r_max = float(r_map.max())
-        r_min = float(r_map.min()) # Usually close to 0
+        r_min = float(r_map.min())  # Usually close to 0
 
         # Determine cutoff b
-        # We want to keep range (0, b). 
+        # We want to keep range (0, b).
         # b should be randomly chosen in [r_max * min_ratio, r_max]
-        # But closer to r_min logic: technically user said "0 < b < a". 
+        # But closer to r_min logic: technically user said "0 < b < a".
         # We ensure b is at least retaining a significant portion of the core.
-        
+
         lower_bound = r_max * self.min_crop_ratio
         if lower_bound <= r_min:
-             lower_bound = r_min + (r_max - r_min) * 0.1 # Safety guard
+            lower_bound = r_min + (r_max - r_min) * 0.1  # Safety guard
 
         b = random.uniform(lower_bound, r_max)
 
@@ -99,7 +100,7 @@ class RadialCropAugmentor:
         # Apply mask to all channels
         # x is (C, H, W), mask is (H, W)
         x[:, mask] = 0.0
-        
+
         return x, coord
 
 
@@ -128,13 +129,13 @@ class GalPTDataset(Dataset):
         def _ensure_tensor(arr, *, name: str):
             if isinstance(arr, torch.Tensor):
                 return arr.to(dtype=torch.float32)
-            
+
             # Special handling for potentially string-based 'groups'
             if name == "groups":
                 if isinstance(arr, list):
                     arr = np.array(arr)
-                if isinstance(arr, np.ndarray) and arr.dtype.kind in 'SU':
-                    return arr # Keep as numpy string array for later processing
+                if isinstance(arr, np.ndarray) and arr.dtype.kind in "SU":
+                    return arr  # Keep as numpy string array for later processing
 
             try:
                 return torch.as_tensor(arr, dtype=torch.float32)
@@ -150,7 +151,7 @@ class GalPTDataset(Dataset):
         self.y_bondi = _ensure_tensor(self.y_bondi, name="y_bondi").view(-1, 1) if self.y_bondi is not None else None
 
         groups_raw = _ensure_tensor(self.groups, name="groups")
-        if isinstance(groups_raw, np.ndarray) and groups_raw.dtype.kind in 'SU':
+        if isinstance(groups_raw, np.ndarray) and groups_raw.dtype.kind in "SU":
             # Handle string groups
             raw_groups = groups_raw.reshape(-1, 1)
             unique_groups, inv = np.unique(raw_groups, return_inverse=True)
@@ -171,9 +172,9 @@ class GalPTDataset(Dataset):
             self.groups = inv.long().view(-1, 1)
 
         self.augmentor = augmentor
-        
-        # Previously we built channel protocol here for old augmentor. 
-        # With RadialCropAugmentor, we just mask everything, so channel awareness is less critical 
+
+        # Previously we built channel protocol here for old augmentor.
+        # With RadialCropAugmentor, we just mask everything, so channel awareness is less critical
         # unless we want to avoid masking specific channels. Just keeping it simple for now.
 
     def __len__(self):
@@ -193,9 +194,7 @@ class GalPTDataset(Dataset):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train MACNetRes with MBH input")
     parser.add_argument("--cache_dir", type=str, default=".cache", help="Directory containing cached .pt datasets")
-    parser.add_argument(
-        "--exp_name", type=str, default="Exp5_", help="Experiment name prefix used for saving results"
-    )
+    parser.add_argument("--exp_name", type=str, default="Exp5_", help="Experiment name prefix used for saving results")
     parser.add_argument(
         "--data_exp", type=str, default=None, help="Experiment name prefix for loading data (default: same as exp_name)"
     )
@@ -267,12 +266,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to Optuna/JSON HPO params file. Matching CLI args will be overridden",
     )
-    
+
     # Augmentation args
     parser.add_argument("--aug_prob", type=float, default=0.8, help="Probability to apply radial crop")
     parser.add_argument("--aug_min_crop_ratio", type=float, default=0.6, help="Minimum ratio r_cut/r_max for cropping")
-    
+
     parser.add_argument("--log_dir", type=str, default="runs", help="Directory to write TensorBoard logs")
+    parser.add_argument("--no_save", action="store_true", help="Disable saving results to disk (useful for HPO)")
 
     return parser.parse_args()
 
@@ -378,7 +378,7 @@ def make_criterion(kind: str, delta: float, alpha: float = 1.0):
         raise ValueError(kind)
 
     def weight_linear(target: torch.Tensor):
-        return 1.0 + alpha * torch.exp(target) 
+        return 1.0 + alpha * torch.exp(target)
 
     return WeightedLoss(base_criterion=base, weights_fn=weight_linear)
 
@@ -627,12 +627,9 @@ def main(args=None):
     cache_dir = args.cache_dir
     exp = args.exp_name
     data_exp = args.data_exp if args.data_exp else exp
-    
-    train_augmentor = RadialCropAugmentor(
-        min_crop_ratio=args.aug_min_crop_ratio,
-        p_crop=args.aug_prob
-    )
-    
+
+    train_augmentor = RadialCropAugmentor(min_crop_ratio=args.aug_min_crop_ratio, p_crop=args.aug_prob)
+
     train_ds = GalPTDataset(os.path.join(cache_dir, data_exp + "train.pt"), augmentor=train_augmentor)
     val_ds = GalPTDataset(os.path.join(cache_dir, data_exp + "val.pt"))
     test_ds = GalPTDataset(os.path.join(cache_dir, data_exp + "test.pt"))
@@ -733,24 +730,30 @@ def main(args=None):
     scaler = torch.amp.GradScaler(enabled=use_amp)
 
     # Save dirs
-    save_dir = os.path.join("Results", f"{exp}{run_stamp}")
-    os.makedirs(save_dir, exist_ok=True)
-    hyperparams_path = os.path.join(save_dir, "hyperparameters.json")
-    hyperparams = vars(args).copy()
-    hyperparams.update(
-        {
-            "resolved_device": str(device),
-            "log_dir": log_dir,
-            "save_dir": save_dir,
-            "run_stamp": run_stamp,
-        }
-    )
-    with open(hyperparams_path, "w", encoding="utf-8") as f:
-        json.dump(hyperparams, f, indent=2, sort_keys=True)
-    best_path = os.path.join(save_dir, f"{exp}best_model.pth")
+    if not args.no_save:
+        save_dir = os.path.join("Results", f"{exp}{run_stamp}")
+        os.makedirs(save_dir, exist_ok=True)
+        hyperparams_path = os.path.join(save_dir, "hyperparameters.json")
+        hyperparams = vars(args).copy()
+        hyperparams.update(
+            {
+                "resolved_device": str(device),
+                "log_dir": log_dir,
+                "save_dir": save_dir,
+                "run_stamp": run_stamp,
+            }
+        )
+        with open(hyperparams_path, "w", encoding="utf-8") as f:
+            json.dump(hyperparams, f, indent=2, sort_keys=True)
+        best_path = os.path.join(save_dir, f"{exp}best_model.pth")
+    else:
+        save_dir = None
+        best_path = None
 
     # Train
     best_val = float("inf")
+    best_model_state = None  # To store best model in memory if no_save is True
+
     patience = max(0, args.patience)
     no_improve = 0
     print("Starting training")
@@ -782,27 +785,43 @@ def main(args=None):
         if worst_val < best_val - 1e-8:
             best_val = worst_val
             no_improve = 0
-            torch.save(
-                {"model": model.state_dict(), "val_loss": best_val, "mean_val": mean_val, "epoch": epoch}, best_path
-            )
+            if args.no_save:
+                best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            else:
+                torch.save(
+                    {"model": model.state_dict(), "val_loss": best_val, "mean_val": mean_val, "epoch": epoch}, best_path
+                )
         else:
             no_improve += 1
             if patience > 0 and no_improve >= patience:
                 print(f"Early stopping at epoch {epoch}")
                 break
 
-    if best_val == float("inf") or not os.path.exists(best_path):
-        print("No improvement was found during training. Best model not saved.")
+    has_best = False
+    if args.no_save:
+        if best_val != float("inf") and best_model_state is not None:
+            has_best = True
+    else:
+        if best_val != float("inf") and os.path.exists(best_path):
+            has_best = True
+
+    if not has_best:
+        print("No improvement was found during training. Best model not saved (or not found).")
         return float("inf")
 
     print(f"Best val loss: {best_val:.6f}. Loading best and testing.")
-    ckpt = torch.load(best_path, map_location=device)
-    model.load_state_dict(ckpt["model"])
+
+    if args.no_save:
+        model.load_state_dict(best_model_state)
+    else:
+        ckpt = torch.load(best_path, map_location=device)
+        model.load_state_dict(ckpt["model"])
 
     test_loss, group_means = eval_epoch(model, test_loader, criterion, device, writer, epoch=0)
     print(f"Test loss: {test_loss:.6f}, per-domain: {group_means}")
-    print(f"Best model saved to: {best_path}")
-    
+    if not args.no_save:
+        print(f"Best model saved to: {best_path}")
+
     return best_val
 
 
