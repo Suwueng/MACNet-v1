@@ -49,9 +49,7 @@ class CachePt:
         )
         return CachePt(train_set), CachePt(val_set), CachePt(test_set)
 
-    def process(
-        self, threshold: float = None, mirror: bool = True, balance: str = None
-    ):
+    def process(self, threshold: float = None, mirror: bool = True, balance: str = None):
         data = self._dataset
         if threshold is not None:
             data.filter(threshold)
@@ -121,20 +119,16 @@ if __name__ == "__main__":
     # Use the global variables (renamed to match notebook import expectation)
     exp_eg_folder_paths = Exp_eg_folder_paths
     exp_dg_folder_paths = Exp_dg_folder_paths
-    
+
     exp_all_folder_paths = exp_eg_folder_paths + exp_dg_folder_paths
 
     # Create each type galaxy cache
-    for i, path in enumerate(
-        [exp_eg_folder_paths, exp_dg_folder_paths, exp_all_folder_paths]
-    ):
+    for i, path in enumerate([exp_eg_folder_paths, exp_dg_folder_paths, exp_all_folder_paths]):
         print(f"Processing Experiment {i+1}...")
         save_path = os.path.join(".cache", f"Exp{i+1}_")
 
         cache = CachePt().load(path)
-        train_cache, val_cache, test_cache = cache.split(
-            train_size=0.6, validation_size=0.2, stratify="groups"
-        )
+        train_cache, val_cache, test_cache = cache.split(train_size=0.6, validation_size=0.2, stratify="groups")
 
         train_cache = train_cache.process(threshold=-5, balance="oversample")
         val_cache = val_cache.process(threshold=-5)
@@ -165,9 +159,7 @@ if __name__ == "__main__":
         save_path = os.path.join(".cache", f"Exp{i+4}_")
 
         cache_in = CachePt().load(in_paths)
-        train_cache, val_cache, test_cache = cache_in.split(
-            train_size=0.6, validation_size=0.2, stratify="groups"
-        )
+        train_cache, val_cache, test_cache = cache_in.split(train_size=0.6, validation_size=0.2, stratify="groups")
 
         train_cache = train_cache.process(threshold=-5, balance="oversample")
         val_cache = val_cache.process(threshold=-5)
@@ -186,3 +178,19 @@ if __name__ == "__main__":
         print(f"  Out-set size: {len(cache_out)}")
 
         cache_out.to_pt(save_path + "out.pt", mean, std)
+
+    exp_dg_folder_paths_nolow = exp_dg_folder_paths.copy()
+    exp_dg_folder_paths_nolow.pop(5)
+    print(f"Processing Experiment 6...")
+    save_path = os.path.join(".cache", f"Exp6_")
+    cache = CachePt().load(exp_dg_folder_paths_nolow)
+    train_cache, val_cache, test_cache = cache.split(train_size=0.6, validation_size=0.2, stratify="groups")
+    train_cache = train_cache.process(threshold=-5, balance="oversample")
+    val_cache = val_cache.process(threshold=-5)
+    test_cache = test_cache.process(threshold=-5)
+    print(f"  Training set size:   {len(train_cache)}")
+    print(f"  Validation set size: {len(val_cache)}")
+    print(f"  Testing set size:    {len(test_cache)}")
+    mean, std = train_cache.to_pt(save_path + "train.pt")
+    val_cache.to_pt(save_path + "val.pt", mean, std)
+    test_cache.to_pt(save_path + "test.pt", mean, std)

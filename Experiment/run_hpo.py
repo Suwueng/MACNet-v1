@@ -14,7 +14,7 @@ import main_ViT
 
 # Define the number of trials and timeout (in seconds)
 N_TRIALS = 600
-TIMEOUT = 3600 * 3  # 3 hours
+TIMEOUT = 3600 * 10  # 3 hours
 
 
 def objective(trial, data_exp):
