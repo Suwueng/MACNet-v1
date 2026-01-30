@@ -14,7 +14,7 @@ import main_ViT
 
 # Define the number of trials and timeout (in seconds)
 N_TRIALS = 600
-TIMEOUT = 3600 * 10  # 3 hours
+TIMEOUT = 3600 * 8  # 8 hours
 
 
 def objective(trial, data_exp):
@@ -78,7 +78,7 @@ def objective(trial, data_exp):
 
 if __name__ == "__main__":
     # Create storage for persistence (optional)
-    data_exp = "Exp1_"
+    data_exp = "Exp6_"
     study_name = f".cache/{data_exp}macnet_vit_hpo"
     storage_name = "sqlite:///{}.db".format(study_name)
 
