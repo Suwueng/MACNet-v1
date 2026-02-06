@@ -54,7 +54,7 @@ if __name__ == "__main__":
     # 请在这里修改为您想要读取的 H5 文件的实际路径
     # 例如: r"D:\path\to\your\Exp2_test_cached.h5"
     target_h5_path = (
-        r"D:\PersonFiles\Codes\Project\MACNet v1\Results\Exp2_ViT20260126_133957\prediction_data\coarse.h5"
+        r"D:\PersonFiles\Codes\Project\MACNet v1\Results\Exp2_ViT20260130_223957\prediction_data\Exp2_test_cached.h5"
     )
     # ===========================================
 

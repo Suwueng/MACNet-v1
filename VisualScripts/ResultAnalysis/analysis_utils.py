@@ -44,6 +44,14 @@ def setup_project_env():
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
+    # Ensure CWD is project root (fixes .config discovery in Preprocess.py)
+    try:
+        if Path.cwd() != project_root:
+            os.chdir(project_root)
+            print(f"[INFO] Changed CWD to Project Root: {project_root}")
+    except Exception as e:
+        print(f"[WARN] Could not switch CWD: {e}")
+
     return project_root
 
 
@@ -176,9 +184,13 @@ class CachedPTDataset:
         self.coord = None
         self.y_bondi = None
         self.groups = None
+        self.time = None
         self.type = "cached"
 
-        if len(items) >= 5:
+        if len(items) >= 8:
+            self.x, self.coord, self.y, self.mbh, self.y_bondi, self.groups, _, self.time = items[:8]
+            self.kind = "vit"
+        elif len(items) >= 5:
             if isinstance(items[1], (torch.Tensor, np.ndarray)) and items[1].ndim >= 2:
                 self.x, self.coord, self.y, self.mbh, self.y_bondi, self.groups = items[:6]
                 self.kind = "vit"
@@ -194,9 +206,12 @@ class CachedPTDataset:
         self.y = ensure_tensor(self.y).view(-1, 1)
         self.mbh = ensure_tensor(self.mbh).view(-1, 1)
         self.y_bondi = ensure_tensor(self.y_bondi).view(-1, 1) if self.y_bondi is not None else None
+        self.time = ensure_tensor(self.time) if self.time is not None else None
 
         if self.groups is not None:
+            self.group_names = None
             if isinstance(self.groups, np.ndarray) and self.groups.dtype.kind in ("S", "U"):
+                self.group_names = self.groups
                 _, indices = np.unique(self.groups, return_inverse=True)
                 self.groups = torch.as_tensor(indices, dtype=torch.long)
             else:
@@ -392,14 +407,16 @@ def predict_dataset(ds, model, device, model_type, batch_size=32, return_feats=F
         df.loc[np.isclose(df["y_bondi"], -100), "y_bondi"] = np.nan
         df["bondi_error"] = df["y_bondi"] - df["y_true"]
 
-    if hasattr(ds, "time"):
+    if hasattr(ds, "time") and ds.time is not None:
         df["time"] = np.array(ds.time)
-    if hasattr(ds, "mdot_edd"):
+    if hasattr(ds, "mdot_edd") and ds.mdot_edd is not None:
         df["mdot_edd"] = np.array(ds.mdot_edd)
 
     df["error"] = df["y_pred"] - df["y_true"]
 
-    if hasattr(ds, "type"):
+    if hasattr(ds, "group_names") and ds.group_names is not None and len(ds.group_names) == len(df):
+        df["type"] = ds.group_names
+    elif hasattr(ds, "type"):
         df["type"] = ds.type
     elif hasattr(ds, "groups") and ds.groups is not None:
         df["type"] = "unknown_group"

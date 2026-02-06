@@ -81,6 +81,7 @@ class CachePt:
                 data.y_baseline,
                 data.groups,
                 data.n_groups,
+                data.time,
             ),
             save_path,
         )
