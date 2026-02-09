@@ -21,7 +21,7 @@ def setup_project_env():
     """Found project root and set up environment."""
     current_path = Path.cwd()
     project_root = None
-    markers = ["Experiment", "RawDataProcessing", ".config"]
+    markers = ["Experiment", "raw_data_processing", ".config"]
 
     # Try to find root from CWD (Notebook execution context)
     cand_path = current_path
@@ -44,7 +44,7 @@ def setup_project_env():
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    # Ensure CWD is project root (fixes .config discovery in Preprocess.py)
+    # Ensure CWD is project root (fixes .config discovery in prepare_data.py)
     try:
         if Path.cwd() != project_root:
             os.chdir(project_root)
@@ -60,8 +60,8 @@ PROJECT_ROOT = setup_project_env()
 
 # Project Imports
 try:
-    from RawDataProcessing.GalaxyData import GalDataSet
-    from Experiment.Network import (
+    from raw_data_processing.galaxy_data import GalDataSet
+    from Experiment.models import (
         MACNetRes_mbh,
         AccretionTransformer,
         MACNetFiLM,
@@ -72,7 +72,7 @@ try:
 
     # Import Preprocess paths if available
     try:
-        from Experiment.Preprocess import Exp_eg_folder_paths, Exp_dg_folder_paths
+        from Experiment.prepare_data import Exp_eg_folder_paths, Exp_dg_folder_paths
     except ImportError:
         Exp_eg_folder_paths = []
         Exp_dg_folder_paths = []
@@ -225,7 +225,16 @@ class CachedPTDataset:
 
 
 class HDF5Dataset:
-    def __init__(self, hdf5_conf, resolution="coarse"):
+    def __init__(
+        self,
+        hdf5_conf,
+        resolution="coarse",
+        mean=None,
+        std=None,
+        log_transform=True,
+        mirror=False,
+        balance=None,
+    ):
         if isinstance(hdf5_conf, (list, tuple)):
             self.folder_path = hdf5_conf[0]
         else:
@@ -236,7 +245,15 @@ class HDF5Dataset:
         loaded = GalDataSet().load_data((self.folder_path, 0))
         loaded.drop_invalid().filter(-5)
 
-        self.x, _, _ = loaded.standardize()
+        if mirror:
+            loaded.mirror_data()
+        if balance is not None:
+            loaded.balance_groups(method=balance)
+
+        if mean is not None and std is not None:
+            self.x = loaded.standardize(mean, std, log_transform=log_transform)
+        else:
+            self.x, _, _ = loaded.standardize(log_transform=log_transform)
         self.coord = loaded.coordinate
         self.y = loaded.y
         self.mbh = loaded.mbh
@@ -464,33 +481,66 @@ def save_plot(plt_obj, name, fig_dir, fmt="png"):
 
 
 def plot_scatter(df, title, fig_dir, limit_range=True):
-    plt.figure(figsize=(6, 6), dpi=120)
     vmin = min(df["y_true"].min(), df["y_pred"].min()) - 0.5
     vmax = max(df["y_true"].max(), df["y_pred"].max()) + 0.5
-    plt.plot([vmin, vmax], [vmin, vmax], "r--", lw=1.5, label="Ideal", zorder=5)
-    plt.plot([vmin, vmax], [vmin - 1, vmax - 1], "k--", lw=0.8, alpha=0.5, label=r"$\pm$1 dex")
-    plt.plot([vmin, vmax], [vmin + 1, vmax + 1], "k--", lw=0.8, alpha=0.5)
 
-    groups = df["type"].unique()
-    for i, g in enumerate(groups):
-        sub = df[df["type"] == g]
-        plt.scatter(
-            sub["y_true"], sub["y_pred"], s=8, alpha=0.4, color=COLORS[i % len(COLORS)], label=f"{g}", edgecolors="none"
-        )
+    def _plot_base(ax, show_bondi=False):
+        ax.plot([vmin, vmax], [vmin, vmax], "r--", lw=1.5, label="Ideal", zorder=5)
+        ax.plot([vmin, vmax], [vmin - 1, vmax - 1], "k--", lw=0.8, alpha=0.5, label=r"$\pm$1 dex")
+        ax.plot([vmin, vmax], [vmin + 1, vmax + 1], "k--", lw=0.8, alpha=0.5)
 
-    if "y_bondi" in df.columns:
-        plt.scatter(df["y_true"], df["y_bondi"], s=15, marker="x", alpha=0.2, color="gray", label="Bondi", zorder=1)
+        groups = df["type"].unique()
+        for i, g in enumerate(groups):
+            sub = df[df["type"] == g]
+            ax.scatter(
+                sub["y_true"],
+                sub["y_pred"],
+                s=8,
+                alpha=0.7,
+                color=COLORS[i % len(COLORS)],
+                label=f"{g}",
+                edgecolors="none",
+            )
 
-    plt.title(title)
-    plt.xlabel(r"True $\log_{10}(\dot{M}/\dot{M}_{Edd})$")
-    plt.ylabel(r"Predicted $\log_{10}(\dot{M}/\dot{M}_{Edd})$")
-    if limit_range:
-        plt.xlim(vmin, vmax)
-        plt.ylim(vmin, vmax)
-    plt.legend(loc="upper left")
-    plt.grid(True, linestyle=":", alpha=0.3)
-    save_plot(plt, f"scatter_{title.replace(' ', '_').lower()}", fig_dir)
-    plt.show()
+        if show_bondi and "y_bondi" in df.columns:
+            ax.scatter(
+                df["y_true"],
+                df["y_bondi"],
+                s=15,
+                marker="x",
+                alpha=0.2,
+                color="gray",
+                label="Bondi",
+                zorder=1,
+            )
+
+        ax.set_xlabel(r"True $\log_{10}(\dot{M}/\dot{M}_{Edd})$")
+        ax.set_ylabel(r"Predicted $\log_{10}(\dot{M}/\dot{M}_{Edd})$")
+        if limit_range:
+            ax.set_xlim(vmin, vmax)
+            ax.set_ylim(vmin, vmax)
+        ax.grid(True, linestyle=":", alpha=0.3)
+
+    has_bondi = "y_bondi" in df.columns
+    if has_bondi:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5), dpi=120, sharex=True, sharey=True)
+        _plot_base(axes[0], show_bondi=False)
+        axes[0].set_title(f"{title} (No Bondi)")
+        _plot_base(axes[1], show_bondi=True)
+        axes[1].set_title(f"{title} (With Bondi)")
+        axes[0].legend(loc="upper left")
+        axes[1].legend(loc="upper left")
+        fig.tight_layout()
+        save_plot(plt, f"scatter_{title.replace(' ', '_').lower()}", fig_dir)
+        plt.show()
+    else:
+        plt.figure(figsize=(6, 6), dpi=120)
+        ax = plt.gca()
+        _plot_base(ax, show_bondi=False)
+        ax.set_title(title)
+        ax.legend(loc="upper left")
+        save_plot(plt, f"scatter_{title.replace(' ', '_').lower()}", fig_dir)
+        plt.show()
 
 
 def plot_error_dist(df, title, fig_dir, model_label="Model"):

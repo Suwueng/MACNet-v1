@@ -1,183 +1,7 @@
-import os
 import math
-import copy
-from datetime import datetime
-
 import torch
 import torch.nn as nn
-from torch.utils.tensorboard import SummaryWriter
 from typing import List, Tuple, Optional
-
-
-# =============================================
-# Training Function
-# =============================================
-def training(
-    train_loader=None,
-    val_loader=None,
-    model=None,
-    criterion=None,
-    optimizer=None,
-    device=None,
-    num_epochs=25,
-    save_path=None,
-    scheduler=None,
-    *,
-    test_loader=None,
-    grad_clip=None,
-    use_amp=True,
-    early_stopping_patience=None,
-    log_dir=None,
-    save_every=None,
-):
-    """
-    Train the model and evaluate on validation and test sets.
-    Args:
-        train_loader (DataLoader): DataLoader for training data.
-        val_loader (DataLoader): DataLoader for validation data.
-        model (nn.Module): The neural network model to be trained.
-        criterion (nn.Module): Loss function.
-        optimizer (torch.optim.Optimizer): Optimizer for training.
-        device (torch.device): Device to run the training on (CPU or GPU).
-        num_epochs (int): Number of epochs to train the model.
-        save_path (str): Path to save the best model weights.
-        scheduler (torch.optim.lr_scheduler, optional): Learning rate scheduler.
-    """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    best_val_loss = float("inf")
-    best_model_wts = None
-    epochs_no_improve = 0
-
-    # Initialize TensorBoard writer
-    if log_dir is None:
-        log_dir = os.path.join("runs", datetime.now().strftime("%Y%m%d_%H%M%S"))
-    writer = SummaryWriter(log_dir=log_dir)
-    print(f"TensorBoard logs: {log_dir}")
-
-    # Optional graph (safe-guarded)
-    try:
-        inputs, mbh_ex, _ = next(iter(train_loader))
-        writer.add_graph(model, (inputs.to(device), mbh_ex.to(device)))
-    except Exception:
-        pass
-
-    # Use the new torch.amp API (avoids FutureWarning)
-    scaler = torch.amp.GradScaler(enabled=(use_amp and device.type == "cuda"))
-
-    for epoch in range(num_epochs):
-        print(f"Epoch {epoch + 1}/{num_epochs}")
-        print("-" * 10)
-
-        # Training phase
-        model.train()
-        running_loss = 0.0
-        for inputs, mbh, labels in train_loader:
-            inputs = inputs.to(device, non_blocking=True)
-            mbh = mbh.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-
-            optimizer.zero_grad(set_to_none=True)
-
-            with torch.amp.autocast(device_type="cuda", enabled=(use_amp and device.type == "cuda")):
-                outputs = model(inputs, mbh)
-                loss = criterion(outputs, labels)
-
-            if not torch.isfinite(loss):
-                print("Non-finite loss encountered; skipping batch.")
-                continue
-
-            if scaler.is_enabled():
-                scaler.scale(loss).backward()
-                if grad_clip:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                if grad_clip:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                optimizer.step()
-
-            running_loss += loss.item() * inputs.size(0)
-
-        epoch_loss = running_loss / len(train_loader.dataset)
-        print(f"Training Loss: {epoch_loss:.4f}")
-        writer.add_scalar("Loss/train", epoch_loss, epoch)
-
-        # Validation phase
-        model.eval()
-        val_running_loss = 0.0
-        with torch.no_grad():
-            for inputs, mbh, labels in val_loader:
-                inputs = inputs.to(device, non_blocking=True)
-                mbh = mbh.to(device, non_blocking=True)
-                labels = labels.to(device, non_blocking=True)
-
-                with torch.amp.autocast(device_type="cuda", enabled=(use_amp and device.type == "cuda")):
-                    outputs = model(inputs, mbh)
-                    loss = criterion(outputs, labels)
-
-                val_running_loss += loss.item() * inputs.size(0)
-
-        val_epoch_loss = val_running_loss / len(val_loader.dataset)
-        print(f"Validation Loss: {val_epoch_loss:.4f}")
-        writer.add_scalar("Loss/val", val_epoch_loss, epoch)
-
-        if scheduler:
-            scheduler.step(val_epoch_loss)
-            current_lr = optimizer.param_groups[0]["lr"]
-            writer.add_scalar("LearningRate", current_lr, epoch)
-
-        # Deep copy the model
-        if val_epoch_loss < best_val_loss:
-            best_val_loss = val_epoch_loss
-            best_model_wts = copy.deepcopy(model.state_dict())
-            if save_path:
-                torch.save(best_model_wts, save_path)
-                print(f"Best model saved with validation loss: {best_val_loss:.4f}")
-            epochs_no_improve = 0
-        else:
-            epochs_no_improve += 1
-
-        if save_every and isinstance(save_every, int) and save_every > 0 and ((epoch + 1) % save_every == 0):
-            ckpt_path = (save_path or os.path.join("Results", "checkpoint.pth")).replace(
-                "best_model", f"epoch{epoch+1}"
-            )
-            torch.save(model.state_dict(), ckpt_path)
-            print(f"Checkpoint saved: {ckpt_path}")
-
-        if early_stopping_patience is not None and early_stopping_patience > 0:
-            if epochs_no_improve >= early_stopping_patience:
-                print(f"Early stopping triggered after {epoch+1} epochs.")
-                break
-
-    # Restore best weights
-    if best_model_wts is not None:
-        model.load_state_dict(best_model_wts)
-
-    # Test evaluation
-    history = {"best_val_loss": best_val_loss}
-    if test_loader is not None:
-        model.eval()
-        test_running_loss = 0.0
-        with torch.no_grad():
-            for inputs, mbh, labels in test_loader:
-                inputs = inputs.to(device, non_blocking=True)
-                mbh = mbh.to(device, non_blocking=True)
-                labels = labels.to(device, non_blocking=True)
-                with torch.amp.autocast(device_type="cuda", enabled=(use_amp and device.type == "cuda")):
-                    outputs = model(inputs, mbh)
-                    loss = criterion(outputs, labels)
-                test_running_loss += loss.item() * inputs.size(0)
-        test_loss = test_running_loss / len(test_loader.dataset)
-        writer.add_scalar("Loss/test", test_loss, epoch + 1)
-        history["test_loss"] = test_loss
-
-    writer.close()
-    return history
 
 
 # =============================================
@@ -638,4 +462,249 @@ class AccretionTransformer(nn.Module):
         # Readout: CLS
         cls_out = x_tok[:, 0, :]  # (B, D)
         y = self.head(cls_out).squeeze(-1)  # (B,)
+        return y
+
+# =============================================
+# CNN-based model with Fourier PE + FiLM (append to models.py)
+# =============================================
+
+
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation: lightweight channel attention."""
+
+    def __init__(self, channels: int, reduction: int = 4):
+        super().__init__()
+        mid = max(channels // reduction, 8)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, mid),
+            nn.SiLU(inplace=True),
+            nn.Linear(mid, channels),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, _, _ = x.shape
+        w = self.pool(x).view(B, C)
+        w = self.fc(w).view(B, C, 1, 1)
+        return x * w
+
+
+class ConvFiLMBlock(nn.Module):
+    """
+    Pre-activation ResNet block with:
+      - BN → ReLU → Conv3×3 → BN → ReLU → Conv3×3
+      - FiLM modulation (γ, β) applied after the first BN
+      - SE channel attention at the end
+      - Optional 1×1 skip projection + stride-2 downsampling
+    """
+
+    def __init__(
+        self,
+        in_ch: int,
+        out_ch: int,
+        stride: int = 1,
+        p_drop: float = 0.1,
+        se_reduction: int = 4,
+    ):
+        super().__init__()
+        self.bn1 = nn.BatchNorm2d(in_ch)
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)
+        self.se = SEBlock(out_ch, reduction=se_reduction)
+        self.drop = nn.Dropout2d(p_drop)
+
+        self.skip = (
+            nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False)
+            if (in_ch != out_ch or stride != 1)
+            else nn.Identity()
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        gamma: Optional[torch.Tensor] = None,
+        beta: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        identity = self.skip(x)
+
+        out = self.bn1(x)
+        out = torch.relu(out)
+        out = self.conv1(out)
+
+        out = self.bn2(out)
+        # FiLM modulation: scale + shift after normalization
+        if gamma is not None and beta is not None:
+            out = (1 + gamma) * out + beta
+        out = torch.relu(out)
+        out = self.drop(out)
+        out = self.conv2(out)
+
+        out = self.se(out)
+        return out + identity
+
+
+class ConvFiLMConditioner(nn.Module):
+    """
+    Map scalar BH mass → per-stage (γ, β) for 2D feature maps.
+    Each γ/β has shape (B, C_stage, 1, 1) to broadcast over spatial dims.
+    """
+
+    def __init__(self, stage_channels: List[int], hidden: int = 128):
+        super().__init__()
+        self.stage_channels = stage_channels
+        total_out = 2 * sum(stage_channels)  # γ + β for each stage
+        self.net = nn.Sequential(
+            nn.Linear(1, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, total_out),
+        )
+
+    def forward(
+        self, bh_mass: torch.Tensor
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+        if bh_mass.dim() == 1:
+            bh_mass = bh_mass.unsqueeze(-1)
+        B = bh_mass.shape[0]
+        out = self.net(bh_mass)  # (B, total_out)
+
+        gamma_list, beta_list = [], []
+        offset = 0
+        for ch in self.stage_channels:
+            gamma_list.append(out[:, offset : offset + ch].view(B, ch, 1, 1))
+            offset += ch
+            beta_list.append(out[:, offset : offset + ch].view(B, ch, 1, 1))
+            offset += ch
+        return gamma_list, beta_list
+
+
+class AccretionConvNet(nn.Module):
+    """
+    CNN backbone with Fourier positional encoding + FiLM conditioning.
+
+    Architecture:
+      1. Fourier PE of (r, θ) → fused with content channels via concatenation
+      2. Stem conv to lift to base_ch
+      3. 4 residual stages with FiLM conditioning from BH mass
+         Each stage: ConvFiLMBlock × depth, stride-2 downsampling at stage boundaries
+      4. Global average pooling → regression head → scalar output
+
+    Input signature matches AccretionTransformer exactly:
+        x:       (B, C_in, H, W)
+        r:       (B, 1,    H, W)
+        theta:   (B, 1,    H, W)
+        bh_mass: (B,)
+
+    Output:
+        y: (B,)
+    """
+
+    def __init__(
+        self,
+        c_in: int,
+        base_ch: int = 64,
+        stage_depths: Tuple[int, ...] = (2, 2, 2, 2),
+        pos_num_bands: int = 32,
+        pos_max_freq: float = 64.0,
+        p_drop: float = 0.1,
+        se_reduction: int = 4,
+    ):
+        """
+        Args:
+            c_in:          Number of input physical-quantity channels.
+            base_ch:       Base channel count; doubles each stage.
+            stage_depths:  Number of residual blocks per stage.
+            pos_num_bands: Fourier encoding frequency bands.
+            pos_max_freq:  Max frequency for Fourier encoding.
+            p_drop:        Dropout probability.
+            se_reduction:  SE block channel reduction ratio.
+        """
+        super().__init__()
+
+        # ---- Positional encoding (reuse existing module) ----
+        self.posenc = FourierPositionalEncoding2D(
+            num_bands=pos_num_bands,
+            max_frequency=pos_max_freq,
+            include_input=True,
+            theta_pi_periodic=False,
+        )
+        d_pos = self.posenc.out_dim
+
+        # ---- Stem: fuse content + positional features ----
+        stem_in = c_in + d_pos
+        self.stem = nn.Sequential(
+            nn.Conv2d(stem_in, base_ch, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(base_ch),
+            nn.ReLU(inplace=True),
+        )
+
+        # ---- Residual stages ----
+        stage_channels = []
+        stages = []
+        in_ch = base_ch
+        for i, depth in enumerate(stage_depths):
+            out_ch = base_ch * (2 ** i)
+            stage_channels.append(out_ch)
+            blocks = []
+            for j in range(depth):
+                stride = 2 if (j == 0 and i > 0) else 1
+                blocks.append(
+                    ConvFiLMBlock(
+                        in_ch if j == 0 else out_ch,
+                        out_ch,
+                        stride=stride,
+                        p_drop=p_drop,
+                        se_reduction=se_reduction,
+                    )
+                )
+            stages.append(nn.ModuleList(blocks))
+            in_ch = out_ch
+
+        self.stages = nn.ModuleList(stages)
+        self.stage_channels = stage_channels
+        last_ch = stage_channels[-1]
+
+        # ---- FiLM conditioner ----
+        self.film = ConvFiLMConditioner(stage_channels=stage_channels, hidden=128)
+
+        # ---- Regression head ----
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.LayerNorm(last_ch),
+            nn.Linear(last_ch, last_ch // 2),
+            nn.GELU(),
+            nn.Dropout(p_drop),
+            nn.Linear(last_ch // 2, 1),
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,        # (B, C_in, H, W)
+        r: torch.Tensor,        # (B, 1,    H, W)
+        theta: torch.Tensor,    # (B, 1,    H, W)
+        bh_mass: torch.Tensor,  # (B,)
+    ) -> torch.Tensor:
+        # Positional features
+        pos = self.posenc(r, theta, normalize=True)  # (B, D_pos, H, W)
+
+        # Fuse content + positional
+        feat = torch.cat([x, pos], dim=1)  # (B, C_in + D_pos, H, W)
+        feat = self.stem(feat)
+
+        # FiLM conditioning from BH mass
+        gammas, betas = self.film(bh_mass)
+
+        # Residual stages with FiLM
+        for stage_idx, stage in enumerate(self.stages):
+            g = gammas[stage_idx]   # (B, C_stage, 1, 1)
+            b = betas[stage_idx]
+            for block in stage:
+                feat = block(feat, gamma=g, beta=b)
+
+        # Regression
+        y = self.head(feat).squeeze(-1)  # (B,)
         return y

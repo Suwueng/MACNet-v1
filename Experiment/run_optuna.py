@@ -5,12 +5,12 @@ import optuna
 import gc
 from functools import partial
 
-# Add the current directory to sys.path so we can import 'main_ViT'
+# Add the current directory to sys.path so we can import 'train'
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
-import main_ViT
+import train
 
 # Define the number of trials and timeout (in seconds)
 N_TRIALS = 600
@@ -24,7 +24,7 @@ def objective(trial, data_exp):
 
     # 2. Get base arguments
     #    Pass an empty list to avoid conflict with actual CLI args
-    args = main_ViT.parse_args()
+    args = train.parse_args()
 
     # 3. Suggest Hyperparameters
     #    Define your search space here.
@@ -66,7 +66,7 @@ def objective(trial, data_exp):
     # 4. Run Training
     print(f"\n[Optuna] Starting Trial {trial.number} with config: {trial.params}")
     try:
-        best_val_loss = main_ViT.main(args)
+        best_val_loss = train.main(args)
     except Exception as e:
         print(f"[Optuna] Trial {trial.number} failed with error: {e}")
         # Return a bad value or re-raise

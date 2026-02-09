@@ -6,8 +6,8 @@ import numpy as np
 print(os.getcwd())
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from RawDataProcessing.GalaxyData import GalDataSet
-from RawDataProcessing.ParseLogFile import load_config
+from raw_data_processing.galaxy_data import GalDataSet
+from raw_data_processing.parse_log_file import load_config
 
 
 class CachePt:
@@ -88,6 +88,12 @@ class CachePt:
         return mean, std
 
 
+def _save_norm_stats(save_path: str, mean: np.ndarray, std: np.ndarray):
+    norm_path = f"{save_path}norm.npz"
+    np.savez(norm_path, mean=mean, std=std)
+    print(f"[INFO] Saved normalization stats: {norm_path}")
+
+
 def get_folder_paths(configs_path, gal_type, resolution):
     configs = load_config(configs_path)
     data_dir = configs["BaseConfig"]["data_dir"]
@@ -131,14 +137,15 @@ if __name__ == "__main__":
         cache = CachePt().load(path)
         train_cache, val_cache, test_cache = cache.split(train_size=0.6, validation_size=0.2, stratify="groups")
 
-        train_cache = train_cache.process(threshold=-5, balance="oversample")
-        val_cache = val_cache.process(threshold=-5)
-        test_cache = test_cache.process(threshold=-5)
+        train_cache = train_cache.process(balance="oversample")
+        val_cache = val_cache.process()
+        test_cache = test_cache.process()
         print(f"  Training set size:   {len(train_cache)}")
         print(f"  Validation set size: {len(val_cache)}")
         print(f"  Testing set size:    {len(test_cache)}")
 
         mean, std = train_cache.to_pt(save_path + "train.pt")
+        _save_norm_stats(save_path, mean, std)
         val_cache.to_pt(save_path + "val.pt", mean, std)
         test_cache.to_pt(save_path + "test.pt", mean, std)
 
@@ -146,9 +153,9 @@ if __name__ == "__main__":
     exp_eg_folder_paths_in = exp_eg_folder_paths.copy()
     exp_dg_folder_paths_in = exp_dg_folder_paths.copy()
     exp_eg_folder_paths_in.pop(2)
-    exp_dg_folder_paths_in.pop(4)
+    exp_dg_folder_paths_in.pop(2)
     exp_eg_folder_paths_out = [exp_eg_folder_paths[2]]
-    exp_dg_folder_paths_out = [exp_dg_folder_paths[4]]
+    exp_dg_folder_paths_out = [exp_dg_folder_paths[2]]
 
     for i, (in_paths, out_path) in enumerate(
         [
@@ -162,14 +169,15 @@ if __name__ == "__main__":
         cache_in = CachePt().load(in_paths)
         train_cache, val_cache, test_cache = cache_in.split(train_size=0.6, validation_size=0.2, stratify="groups")
 
-        train_cache = train_cache.process(threshold=-5, balance="oversample")
-        val_cache = val_cache.process(threshold=-5)
-        test_cache = test_cache.process(threshold=-5)
+        train_cache = train_cache.process(balance="oversample")
+        val_cache = val_cache.process()
+        test_cache = test_cache.process()
         print(f"  Training set size:   {len(train_cache)}")
         print(f"  Validation set size: {len(val_cache)}")
         print(f"  Testing set size:    {len(test_cache)}")
 
         mean, std = train_cache.to_pt(save_path + "train.pt")
+        _save_norm_stats(save_path, mean, std)
         val_cache.to_pt(save_path + "val.pt", mean, std)
         test_cache.to_pt(save_path + "test.pt", mean, std)
 
@@ -180,18 +188,44 @@ if __name__ == "__main__":
 
         cache_out.to_pt(save_path + "out.pt", mean, std)
 
+    # Create disk galaxies without low-res data
     exp_dg_folder_paths_nolow = exp_dg_folder_paths.copy()
     exp_dg_folder_paths_nolow.pop(5)
     print(f"Processing Experiment 6...")
     save_path = os.path.join(".cache", f"Exp6_")
     cache = CachePt().load(exp_dg_folder_paths_nolow)
     train_cache, val_cache, test_cache = cache.split(train_size=0.6, validation_size=0.2, stratify="groups")
-    train_cache = train_cache.process(threshold=-5, balance="oversample")
-    val_cache = val_cache.process(threshold=-5)
-    test_cache = test_cache.process(threshold=-5)
+    train_cache = train_cache.process(balance="oversample")
+    val_cache = val_cache.process()
+    test_cache = test_cache.process()
     print(f"  Training set size:   {len(train_cache)}")
     print(f"  Validation set size: {len(val_cache)}")
     print(f"  Testing set size:    {len(test_cache)}")
     mean, std = train_cache.to_pt(save_path + "train.pt")
+    _save_norm_stats(save_path, mean, std)
     val_cache.to_pt(save_path + "val.pt", mean, std)
     test_cache.to_pt(save_path + "test.pt", mean, std)
+
+    # Create in- and out-datasets for disk galaxies without low-res data
+    print(f"Processing Experiment 7...")
+    save_path = os.path.join(".cache", f"Exp7_")
+    exp_dg_folder_paths_nolow_in = exp_dg_folder_paths_nolow.copy()
+    exp_dg_folder_paths_nolow_in.pop(2)
+    exp_dg_folder_paths_nolow_out = [exp_dg_folder_paths_nolow[2]]
+    cache_in = CachePt().load(exp_dg_folder_paths_nolow_in)
+    train_cache, val_cache, test_cache = cache_in.split(train_size=0.6, validation_size=0.2, stratify="groups")
+    train_cache = train_cache.process(balance="oversample")
+    val_cache = val_cache.process()
+    test_cache = test_cache.process()
+    print(f"  Training set size:   {len(train_cache)}")
+    print(f"  Validation set size: {len(val_cache)}")
+    print(f"  Testing set size:    {len(test_cache)}")
+    mean, std = train_cache.to_pt(save_path + "train.pt")
+    _save_norm_stats(save_path, mean, std)
+    val_cache.to_pt(save_path + "val.pt", mean, std)
+    test_cache.to_pt(save_path + "test.pt", mean, std)
+
+    cache_out = CachePt().load(exp_dg_folder_paths_nolow_out)
+    cache_out = cache_out.process()
+    print(f"  Out-set size: {len(cache_out)}")
+    cache_out.to_pt(save_path + "out.pt", mean, std)

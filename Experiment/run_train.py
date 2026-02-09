@@ -7,7 +7,7 @@ import json
 # Configuration Source
 # =============================================================================
 # Specify the experiment key from ExperimentSetting.json to run
-TARGET_EXPERIMENT = "Exp6_ViT" 
+TARGET_EXPERIMENT = "Exp5_AccretionConvNet"  # Change this to the desired experiment key
 
 def load_config(exp_key):
     """
@@ -69,7 +69,7 @@ def main():
     # Locate the training script in the same directory
     # 定位同一目录下的训练脚本
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    script_path = os.path.join(current_dir, "main_ViT.py")
+    script_path = os.path.join(current_dir, "train.py")
 
     if not os.path.exists(script_path):
         print(f"Error: Could not find {script_path}")
@@ -86,6 +86,10 @@ def main():
         # Handle None values (skip)
         elif value is None:
             continue
+        # Handle list/tuple (e.g., stage_depths)
+        elif isinstance(value, (list, tuple)):
+            cmd.append(f"--{key}")
+            cmd.append(",".join(str(item) for item in value))
         # Handle standard key-value arguments
         else:
             cmd.append(f"--{key}")

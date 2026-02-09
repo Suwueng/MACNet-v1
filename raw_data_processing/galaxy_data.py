@@ -929,9 +929,9 @@ if __name__ == "__main__":
     from tqdm.contrib import tenumerate
 
     try:
-        from RawDataProcessing.ParseLogFile import load_config, ll_eg, ll_dg
+        from raw_data_processing.parse_log_file import load_config, ll_eg, ll_dg
     except ModuleNotFoundError:
-        from ParseLogFile import load_config, ll_eg, ll_dg
+        from parse_log_file import load_config, ll_eg, ll_dg
 
     configs = load_config(".config")
     raw_data_dir = configs["BaseConfig"]["raw_data_dir"]
@@ -968,7 +968,7 @@ if __name__ == "__main__":
             os.makedirs(save_path_coarse, exist_ok=True)
 
             for index, file_name in tenumerate(hdfra_paths, desc=f"Processing {gal_name}"):
-                if gal_name not in ["disk_galaxy_supplement", "disk_galaxy_fiducial_4", "disk_galaxy_fiducial_7"] and index <= 45:
+                if gal_name not in ["disk_galaxy_fiducial", "disk_galaxy_supplement", "disk_galaxy_fiducial_4", "disk_galaxy_fiducial_7"] and index <= 45:
                     continue  # Skip first unstable snapshots
 
                 file_path = os.path.join(hdfra_folder, file_name)

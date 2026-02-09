@@ -23,34 +23,18 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 
-from Experiment.Network import AccretionTransformer, MACNetRes_mbh, MACNetFiLM
+from Experiment.models import AccretionTransformer, AccretionConvNet, MACNetRes_mbh, MACNetFiLM
 
 
-VELOCITY_CHANNEL_COUNT = 3
-TANGENTIAL_CHANNEL_OFFSET = 1
+MBH_ONLY_MODELS = (MACNetRes_mbh, MACNetFiLM)
 
 
-def build_channel_protocol(
-    num_channels: int, velocity_channels: int = VELOCITY_CHANNEL_COUNT
-) -> dict[str, Tuple[int, ...]]:
-    if num_channels < velocity_channels:
-        raise ValueError(
-            f"Expected at least {velocity_channels} velocity channels but got {num_channels} total channels."
-        )
-    velocity = tuple(range(velocity_channels))
-    scalar = tuple(range(velocity_channels, num_channels))
-    return {"velocity": velocity, "scalar": scalar}
-
-
-DEFAULT_CHANNEL_PROTOCOL = {
-    "velocity": tuple(range(VELOCITY_CHANNEL_COUNT)),
-    "scalar": tuple(),
-}
-DEFAULT_V_THETA_INDEX = (
-    DEFAULT_CHANNEL_PROTOCOL["velocity"][TANGENTIAL_CHANNEL_OFFSET]
-    if len(DEFAULT_CHANNEL_PROTOCOL["velocity"]) > TANGENTIAL_CHANNEL_OFFSET
-    else None
-)
+def predict_batch(model, x: torch.Tensor, coord: torch.Tensor, mbh: torch.Tensor) -> torch.Tensor:
+    if isinstance(model, MBH_ONLY_MODELS):
+        return model(x, mbh)
+    r = coord[:, 0:1]
+    theta = coord[:, 1:2]
+    return model(x, r, theta, mbh)
 
 
 # =============================================
@@ -120,7 +104,12 @@ class GalPTDataset(Dataset):
                 self.x, self.coord, self.y, self.mbh, self.groups, self.n_groups = loaded
                 self.y_bondi = None
             elif len(loaded) >= 7:
-                self.x, self.coord, self.y, self.mbh, self.y_bondi, self.groups, self.n_groups = loaded
+                self.x, self.coord, self.y, self.mbh, self.y_bondi, self.groups, self.n_groups = loaded[:7]
+                if len(loaded) > 7:
+                    print(
+                        f"[Warning] Dataset '{pt_path}' has {len(loaded)} items; "
+                        "extra fields are ignored."
+                    )
             else:
                 raise RuntimeError(f"Unexpected number of items in cached dataset '{pt_path}': {len(loaded)}")
         else:
@@ -172,10 +161,6 @@ class GalPTDataset(Dataset):
             self.groups = inv.long().view(-1, 1)
 
         self.augmentor = augmentor
-
-        # Previously we built channel protocol here for old augmentor.
-        # With RadialCropAugmentor, we just mask everything, so channel awareness is less critical
-        # unless we want to avoid masking specific channels. Just keeping it simple for now.
 
     def __len__(self):
         return self.y.size(0)
@@ -247,11 +232,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--loss", type=str, choices=["mse", "l1", "huber"], default="mse", help="Loss function to use")
     parser.add_argument("--huber_delta", type=float, default=1, help="Delta parameter for Huber loss")
     parser.add_argument(
+        "--weight_mode",
+        type=str,
+        choices=["exp_clamp", "group_zscore_exp", "group_quantile"],
+        default="group_quantile",
+        help="Weighting mode for targets",
+    )
+    parser.add_argument("--weight_alpha", type=float, default=2.0, help="Alpha for target weighting")
+    parser.add_argument("--weight_tau", type=float, default=1.0, help="Temperature for z-score exp weights")
+    parser.add_argument("--weight_power", type=float, default=1.0, help="Power for quantile weights")
+    parser.add_argument("--weight_q_low", type=float, default=0.1, help="Lower quantile for group quantile weights")
+    parser.add_argument("--weight_q_high", type=float, default=0.9, help="Upper quantile for group quantile weights")
+    parser.add_argument(
         "--model_type",
         type=str,
-        choices=["transformer", "resnet", "resfilm"],
+        choices=["transformer", "resnet", "resfilm", "convnet"],
         default="transformer",
-        help="Type of model architecture: 'transformer', 'resnet', or 'resfilm'",
+        help="Type of model architecture: 'transformer', 'resnet', 'resfilm', or 'convnet'",
     )
     parser.add_argument("--d_model", type=int, default=256, help="Model embedding dimension (d_model)")
     parser.add_argument("--n_layers", type=int, default=4, help="Number of transformer layers")
@@ -260,6 +257,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pos_num_bands", type=int, default=32, help="Number of positional encoding frequency bands")
     parser.add_argument("--pos_max_freq", type=float, default=101, help="Maximum positional encoding frequency")
     parser.add_argument("--p_drop", type=float, default=0.3, help="Dropout probability")
+    parser.add_argument("--base_ch", type=int, default=64, help="ConvNet base channels (convnet only)")
+    parser.add_argument(
+        "--stage_depths",
+        type=str,
+        default="2,2,2,2",
+        help="ConvNet stage depths as comma list (e.g., 2,2,2,2)",
+    )
+    parser.add_argument("--se_reduction", type=int, default=4, help="ConvNet SE reduction ratio (convnet only)")
     parser.add_argument(
         "--hpo_params",
         type=str,
@@ -275,6 +280,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_save", action="store_true", help="Disable saving results to disk (useful for HPO)")
 
     return parser.parse_args()
+
+
+def _parse_stage_depths(value: str) -> Tuple[int, ...]:
+    raw = value.strip()
+    if not raw:
+        return (2, 2, 2, 2)
+
+    if raw.startswith("[") or raw.startswith("("):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, (list, tuple)):
+            return tuple(int(x) for x in parsed)
+
+    try:
+        return tuple(int(x.strip()) for x in raw.split(",") if x.strip())
+    except ValueError as exc:
+        raise ValueError(f"Invalid stage_depths value: {value!r}") from exc
 
 
 def _apply_hpo_overrides(args: argparse.Namespace) -> argparse.Namespace:
@@ -303,6 +327,12 @@ def _apply_hpo_overrides(args: argparse.Namespace) -> argparse.Namespace:
         "patience": int,
         "loss": str,
         "huber_delta": float,
+        "weight_mode": str,
+        "weight_alpha": float,
+        "weight_tau": float,
+        "weight_power": float,
+        "weight_q_low": float,
+        "weight_q_high": float,
         "d_model": int,
         "n_layers": int,
         "n_heads": int,
@@ -357,17 +387,50 @@ class WeightedLoss(nn.Module):
         """
         super().__init__()
         self.base_criterion = base_criterion
-        self.weights_fn = weights_fn if weights_fn is not None else (lambda y: torch.ones_like(y))
+        self.weights_fn = weights_fn if weights_fn is not None else (lambda y, groups=None: torch.ones_like(y))
 
-    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(self, pred: torch.Tensor, target: torch.Tensor, groups: torch.Tensor | None = None) -> torch.Tensor:
         loss = self.base_criterion(pred, target)
-        weights = self.weights_fn(target)
+        weights = self.weights_fn(target, groups)
 
         weighted_loss = loss * weights
         return weighted_loss.mean()
 
 
-def make_criterion(kind: str, delta: float, alpha: float = 1.0):
+def _compute_group_stats(
+    y: torch.Tensor,
+    groups: torch.Tensor,
+    n_groups: int,
+    q_low: float = 0.1,
+    q_high: float = 0.9,
+) -> dict[str, torch.Tensor]:
+    y = y.view(-1)
+    groups = groups.view(-1).long()
+    means = torch.zeros(n_groups, dtype=y.dtype)
+    stds = torch.ones(n_groups, dtype=y.dtype)
+    p10 = torch.zeros(n_groups, dtype=y.dtype)
+    p90 = torch.ones(n_groups, dtype=y.dtype)
+    for g in range(n_groups):
+        mask = groups == g
+        if not mask.any():
+            continue
+        y_g = y[mask]
+        means[g] = y_g.mean()
+        stds[g] = y_g.std(unbiased=False)
+        p10[g] = torch.quantile(y_g, q_low)
+        p90[g] = torch.quantile(y_g, q_high)
+    return {"mean": means, "std": stds, "p10": p10, "p90": p90}
+
+
+def make_criterion(
+    kind: str,
+    delta: float,
+    alpha: float = 1.0,
+    weight_mode: str = "group_zscore_exp",
+    group_stats: dict[str, torch.Tensor] | None = None,
+    tau: float = 1.0,
+    power: float = 1.0,
+):
     if kind == "mse":
         base = nn.MSELoss(reduction="none")
     elif kind == "l1":
@@ -377,10 +440,47 @@ def make_criterion(kind: str, delta: float, alpha: float = 1.0):
     else:
         raise ValueError(kind)
 
-    def weight_linear(target: torch.Tensor):
+    def weight_exp(target: torch.Tensor, groups: torch.Tensor | None = None):
         return 1.0 + alpha * torch.exp(target)
+    
+    def weight_exp_clamp(target: torch.Tensor, groups: torch.Tensor | None = None):
+        return 1.0 + alpha * torch.clamp(torch.exp(target), max=1e-2)  
+    
+    def weight_linear(target: torch.Tensor, groups: torch.Tensor | None = None):
+        return 1.0 + alpha * target
+    
+    def weight_softplus(target: torch.Tensor, groups: torch.Tensor | None = None):
+        return 1.0 + alpha * F.softplus(target)
 
-    return WeightedLoss(base_criterion=base, weights_fn=weight_linear)
+    def weight_group_zscore_exp(target: torch.Tensor, groups: torch.Tensor | None = None):
+        if groups is None or group_stats is None:
+            raise ValueError("group_zscore_exp requires groups and group_stats")
+        g = groups.view(-1).long().to(device=target.device)
+        mean = group_stats["mean"].to(device=target.device)[g].view_as(target)
+        std = group_stats["std"].to(device=target.device)[g].view_as(target).clamp_min(1e-6)
+        z = (target - mean) / std
+        return 1.0 + alpha * torch.exp(z / max(1e-6, tau))
+
+    def weight_group_quantile(target: torch.Tensor, groups: torch.Tensor | None = None):
+        if groups is None or group_stats is None:
+            raise ValueError("group_quantile requires groups and group_stats")
+        g = groups.view(-1).long().to(device=target.device)
+        p10 = group_stats["p10"].to(device=target.device)[g].view_as(target)
+        p90 = group_stats["p90"].to(device=target.device)[g].view_as(target)
+        denom = (p90 - p10).clamp_min(1e-6)
+        q = ((target - p10) / denom).clamp(0.0, 1.0)
+        return 1.0 + alpha * torch.pow(q, max(1e-6, power))
+
+    if weight_mode == "exp_clamp":
+        weights_fn = weight_exp_clamp
+    elif weight_mode == "group_zscore_exp":
+        weights_fn = weight_group_zscore_exp
+    elif weight_mode == "group_quantile":
+        weights_fn = weight_group_quantile
+    else:
+        raise ValueError(weight_mode)
+
+    return WeightedLoss(base_criterion=base, weights_fn=weights_fn)
 
 
 class WarmupCosineScheduler:
@@ -441,19 +541,15 @@ def train_one_epoch(model, loader, criterion, optimizer, device, scaler=None, gr
     for batch in loader:
         x = batch[0].to(device, non_blocking=True)  # (B, C_in, H, W)
         coord = batch[1].to(device, non_blocking=True)  # (B, 2, H, W)
-        r = coord[:, 0:1]
-        theta = coord[:, 1:2]
         mbh = batch[2].to(device, non_blocking=True).view(-1)  # (B,)
         y = batch[3].to(device, non_blocking=True).view(-1)  # (B,)
+        groups = batch[4].to(device, non_blocking=True).view(-1)  # (B,)
 
         optimizer.zero_grad(set_to_none=True)
         if scaler is not None:
             with torch.autocast(device_type=device.type, dtype=torch.float16):
-                if isinstance(model, (MACNetRes_mbh, MACNetFiLM)):
-                    pred = model(x, mbh)
-                else:
-                    pred = model(x, r, theta, mbh)  # (B,)
-                loss = criterion(pred, y)
+                pred = predict_batch(model, x, coord, mbh)
+                loss = criterion(pred, y, groups)
             scaler.scale(loss).backward()
             if grad_clip and grad_clip > 0:
                 scaler.unscale_(optimizer)
@@ -463,11 +559,8 @@ def train_one_epoch(model, loader, criterion, optimizer, device, scaler=None, gr
             if scheduler is not None:
                 scheduler.step()
         else:
-            if isinstance(model, (MACNetRes_mbh, MACNetFiLM)):
-                pred = model(x, mbh)
-            else:
-                pred = model(x, r, theta, mbh)
-            loss = criterion(pred, y)
+            pred = predict_batch(model, x, coord, mbh)
+            loss = criterion(pred, y, groups)
             loss.backward()
             if grad_clip and grad_clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -527,10 +620,7 @@ def eval_epoch(model, loader, criterion, device, writer, epoch):
             coord = batch[1].to(device, non_blocking=True)
             mbh = batch[2].to(device, non_blocking=True).view(-1)
             y = batch[3].to(device, non_blocking=True).view(-1)
-            if isinstance(model, (MACNetRes_mbh, MACNetFiLM)):
-                pred = model(x, mbh)
-            else:
-                pred = model(x, coord[:, 0:1], coord[:, 1:2], mbh)
+            pred = predict_batch(model, x, coord, mbh)
             loss = criterion(pred, y).mean().item()
             total_loss += loss * y.size(0)
             n_samples += y.size(0)
@@ -543,20 +633,15 @@ def eval_epoch(model, loader, criterion, device, writer, epoch):
     for batch in loader:
         x = batch[0].to(device, non_blocking=True)
         coord = batch[1].to(device, non_blocking=True)
-        r = coord[:, 0:1]
-        theta = coord[:, 1:2]
         mbh = batch[2].to(device, non_blocking=True).view(-1)
         y = batch[3].to(device, non_blocking=True).view(-1)
         groups = batch[4].view(-1).to(device=mbh.device, dtype=torch.long)
 
-        if isinstance(model, (MACNetRes_mbh, MACNetFiLM)):
-            pred = model(x, mbh)
-        else:
-            pred = model(x, r, theta, mbh)
+        pred = predict_batch(model, x, coord, mbh)
 
         if isinstance(criterion, WeightedLoss):
             base_loss = criterion.base_criterion(pred, y)  # shape: (B, ...) or (B,)
-            weights = criterion.weights_fn(y)  # 同形或可广播
+            weights = criterion.weights_fn(y, groups)  # 同形或可广播
             per_sample_loss = base_loss * weights
         elif isinstance(criterion, nn.HuberLoss):
             per_sample_loss = F.huber_loss(pred, y, reduction="none", delta=getattr(criterion, "delta", 1.0))
@@ -634,6 +719,14 @@ def main(args=None):
     val_ds = GalPTDataset(os.path.join(cache_dir, data_exp + "val.pt"))
     test_ds = GalPTDataset(os.path.join(cache_dir, data_exp + "test.pt"))
 
+    group_stats = _compute_group_stats(
+        train_ds.y,
+        train_ds.groups,
+        int(train_ds.n_groups),
+        q_low=args.weight_q_low,
+        q_high=args.weight_q_high,
+    )
+
     common = dict(batch_size=args.batch_size, pin_memory=(device.type == "cuda"), drop_last=False)
     dl_extra = {}
     if args.num_workers > 0:
@@ -653,7 +746,7 @@ def main(args=None):
     # Model
     c_in = train_ds.x.shape[1]
     if args.model_type == "hybrid":
-        ValueError("Hybrid model type is not implemented in this script.")
+        raise ValueError("Hybrid model type is not implemented in this script.")
     elif args.model_type == "transformer":
         model = AccretionTransformer(
             c_in=c_in,
@@ -673,6 +766,17 @@ def main(args=None):
         model = MACNetFiLM(
             in_channels=c_in,
         ).to(device)
+    elif args.model_type == "convnet":
+        stage_depths = _parse_stage_depths(args.stage_depths)
+        model = AccretionConvNet(
+            c_in=c_in,
+            base_ch=args.base_ch,
+            stage_depths=stage_depths,
+            pos_num_bands=args.pos_num_bands,
+            pos_max_freq=args.pos_max_freq,
+            p_drop=args.p_drop,
+            se_reduction=args.se_reduction,
+        ).to(device)
 
     try:
         model.eval()
@@ -681,14 +785,8 @@ def main(args=None):
             # Use a tiny temp loader with 0 workers to fetch a sample for the graph
             temp_loader = DataLoader(train_ds, batch_size=2, shuffle=True, num_workers=0)
             sample_x, sample_coord, sample_mbh, _, _, _ = next(iter(temp_loader))
-            if isinstance(model, (MACNetRes_mbh, MACNetFiLM)):
-                writer.add_graph(
-                    model,
-                    (
-                        sample_x.to(device),
-                        sample_mbh.view(-1).to(device),
-                    ),
-                )
+            if isinstance(model, MBH_ONLY_MODELS):
+                writer.add_graph(model, (sample_x.to(device), sample_mbh.view(-1).to(device)))
             else:
                 writer.add_graph(
                     model,
@@ -703,7 +801,15 @@ def main(args=None):
         print(f"Warning: could not write model graph to TensorBoard: {exc}")
 
     # Opt / Sched / Loss
-    criterion = make_criterion(args.loss, args.huber_delta)
+    criterion = make_criterion(
+        args.loss,
+        args.huber_delta,
+        alpha=args.weight_alpha,
+        weight_mode=args.weight_mode,
+        group_stats=group_stats,
+        tau=args.weight_tau,
+        power=args.weight_power,
+    )
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     steps_per_epoch = len(train_loader)
     total_steps = steps_per_epoch * max(0, args.epochs)
