@@ -235,11 +235,11 @@ def parse_args() -> argparse.Namespace:
         "--weight_mode",
         type=str,
         choices=["exp_clamp", "group_zscore_exp", "group_quantile"],
-        default="group_quantile",
+        default="group_zscore_exp",
         help="Weighting mode for targets",
     )
-    parser.add_argument("--weight_alpha", type=float, default=2.0, help="Alpha for target weighting")
-    parser.add_argument("--weight_tau", type=float, default=1.0, help="Temperature for z-score exp weights")
+    parser.add_argument("--weight_alpha", type=float, default=0.5, help="Alpha for target weighting")
+    parser.add_argument("--weight_tau", type=float, default=3.0, help="Temperature for z-score exp weights")
     parser.add_argument("--weight_power", type=float, default=1.0, help="Power for quantile weights")
     parser.add_argument("--weight_q_low", type=float, default=0.1, help="Lower quantile for group quantile weights")
     parser.add_argument("--weight_q_high", type=float, default=0.9, help="Upper quantile for group quantile weights")
